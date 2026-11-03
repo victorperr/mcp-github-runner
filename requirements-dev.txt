@@ -1,6 +1,6 @@
 # Everything needed to run the runner and gateway test suites, lint and audit.
 # Versions are the ones the suites were last run with.
-fastmcp==2.14.7
+fastmcp==4.1.4
 mcp==1.30.0
 fastapi==0.162.0
 uvicorn[standard]==0.54.0
