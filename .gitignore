@@ -1,0 +1,19 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local gateway state and keys: never commit
+*.db
+*.db-journal
+*.pem
+dev-oidc-key.pem
+.env
+
+# Third-party reference material (gh-aw excerpts), kept local only
+.references/

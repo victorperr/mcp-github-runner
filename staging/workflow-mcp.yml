@@ -1,0 +1,38 @@
+# Copy to .github/workflows/mcp.yml in the staging repo, next to server.py and mcp-runner.toml.
+name: MCP server
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      call_id:
+        required: false
+      approval:
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+  id-token: write
+
+run-name: ${{ inputs.call_id && format('MCP call {0}', inputs.call_id) || 'MCP manifest' }}
+
+jobs:
+  mcp:
+    runs-on: ${{ fromJSON(vars.MCP_RUNS_ON || '["self-hosted"]') }}
+    environment: ${{ inputs.approval == 'true' && 'mcp-approval' || '' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: victorperr/mcp-github-runner/action@main
+        with:
+          mode: ${{ inputs.call_id && 'call' || 'manifest' }}
+          call-id: ${{ inputs.call_id }}
+          server: server.py:mcp
+          gateway-url: ${{ vars.MCP_GATEWAY_URL }}
+        env:
+          MCP_CLIENT_TOKEN: ${{ !inputs.call_id && secrets.MCP_CLIENT_TOKEN || '' }}
+          STAGING_SECRET: ${{ secrets.STAGING_SECRET }}   # S06 expects this redacted

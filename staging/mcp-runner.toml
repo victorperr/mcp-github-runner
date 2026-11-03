@@ -1,0 +1,6 @@
+[limits]
+max_calls_per_hour = 200
+max_concurrent_calls = 3
+max_result_bytes = 20000   # S10 calls big(50000) to exceed it
+call_timeout_seconds = 300
+approval_timeout_seconds = 600

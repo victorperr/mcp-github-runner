@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Keeps the SHA-pinned actions current (the tag comment is updated too).
+  - package-ecosystem: github-actions
+    directories: ["/", "/action", "/template"]
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+  - package-ecosystem: uv
+    directory: "/template"
+    schedule:
+      interval: weekly

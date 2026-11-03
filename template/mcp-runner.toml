@@ -1,0 +1,18 @@
+# Policy for this MCP server. Everything here is optional; missing values use safe defaults.
+# Unknown keys or tool names are errors, so a typo can't quietly switch a protection off.
+
+[tools]
+# Tools clients can see and call. Omit to publish every tool; [] publishes none.
+allow = ["add", "runner_info", "internal_api_get", "restart_service"]
+# Tools that need approval in the "mcp-approval" environment,
+# on top of tools tagged "requires-approval" in server.py.
+require_approval = []
+
+[limits]
+# The gateway can lower these to its own caps, never raise them.
+max_calls_per_hour = 120
+max_concurrent_calls = 5
+max_argument_bytes = 65536
+max_result_bytes = 1048576
+call_timeout_seconds = 300
+approval_timeout_seconds = 900

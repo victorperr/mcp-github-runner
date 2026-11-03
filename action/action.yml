@@ -1,0 +1,102 @@
+name: "MCP GitHub Runner"
+description: "Run a FastMCP server's tool calls on GitHub Actions for clients connected through the MCP GitHub Runner gateway."
+author: "MCP GitHub Runner"
+branding:
+  icon: "cpu"
+  color: "purple"
+
+inputs:
+  mode:
+    description: "'manifest' uploads the tool list; 'call' runs one tool call."
+    required: true
+  call-id:
+    description: "Call ID sent by the gateway (required for mode 'call')."
+    required: false
+    default: ""
+  server:
+    description: "FastMCP server as 'path/to/file.py[:attr]'."
+    required: false
+    default: "server.py"
+  working-directory:
+    description: "Directory that holds pyproject.toml / requirements.txt."
+    required: false
+    default: "."
+  gateway-url:
+    description: "Gateway base URL (https://...). No default on purpose: results must only go to a gateway you run."
+    required: true
+  audience:
+    description: "OIDC audience the gateway expects."
+    required: false
+    default: "mcp-github-runner"
+  approval-environment:
+    description: "GitHub Environment (with required reviewers) that tools tagged 'requires-approval' must run in."
+    required: false
+    default: "mcp-approval"
+  policy-file:
+    description: "Policy file (tool allowlist, approvals, limits), relative to working-directory. Optional."
+    required: false
+    default: "mcp-runner.toml"
+  redact-env:
+    description: "Comma-separated env var names whose values are redacted from results, on top of names that look secret (TOKEN, PASSWORD, KEY...)."
+    required: false
+    default: ""
+  python-version:
+    description: "Python version (3.11+) used when the project does not pin one."
+    required: false
+    default: "3.12"
+
+runs:
+  using: "composite"
+  steps:
+    # Third-party actions are pinned to a full commit SHA (tag in the comment), like gh-aw's action pinning.
+    - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      with:
+        enable-cache: true
+        python-version: ${{ inputs.python-version }}
+        working-directory: ${{ inputs.working-directory }}
+
+    - name: Install server dependencies
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        if [ -f uv.lock ]; then
+          # Exact versions from the lockfile; fails if pyproject.toml and uv.lock disagree.
+          uv sync --locked --no-dev
+        elif [ -f pyproject.toml ]; then
+          echo "::warning::No uv.lock found. Commit one (run 'uv lock') so dependency versions can't change between calls."
+          uv sync --no-dev
+        elif [ -f requirements.txt ]; then
+          uv venv && uv pip install -r requirements.txt
+        else
+          uv venv && uv pip install "fastmcp>=2.12,<3"
+        fi
+
+    - name: Run mcp_runner
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        PYTHONPATH: ${{ github.action_path }}
+        MCP_GATEWAY_URL: ${{ inputs.gateway-url }}
+        MCP_GATEWAY_AUDIENCE: ${{ inputs.audience }}
+        MCP_SERVER: ${{ inputs.server }}
+        MCP_MODE: ${{ inputs.mode }}
+        MCP_CALL_ID: ${{ inputs.call-id }}
+        MCP_APPROVAL_ENVIRONMENT: ${{ inputs.approval-environment }}
+        MCP_POLICY_FILE: ${{ inputs.policy-file }}
+        MCP_REDACT_ENV: ${{ inputs.redact-env }}
+      run: |
+        # Inputs go through env vars, never straight into the script, to avoid injection.
+        if [ -z "$MCP_GATEWAY_URL" ]; then
+          echo "::error::gateway-url is empty. Set the repo variable MCP_GATEWAY_URL to your gateway's address (Settings > Secrets and variables > Actions > Variables)."
+          exit 1
+        fi
+        # python -P: don't put the repo folder first on sys.path, so repo files can't
+        # shadow mcp_runner itself. The server's folder is added only when it is loaded.
+        if [ "$MCP_MODE" = "call" ]; then
+          if [ -z "$MCP_CALL_ID" ]; then echo "::error::call-id is required in call mode"; exit 1; fi
+          uv run --no-sync python -P -m mcp_runner call --call-id "$MCP_CALL_ID"
+        elif [ "$MCP_MODE" = "manifest" ]; then
+          uv run --no-sync python -P -m mcp_runner manifest
+        else
+          echo "::error::mode must be 'manifest' or 'call'"; exit 1
+        fi

@@ -1,0 +1,29 @@
+name: Staging tests
+
+# Manual: runs staging/test_staging.py against the deployed gateway and staging repo.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  staging:
+    runs-on: ubuntu-latest
+    environment: staging # holds the secrets below; restrict who can run it
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - name: Run staging suite
+        env:
+          STAGING_MCP_URL: ${{ vars.STAGING_MCP_URL }}
+          STAGING_REPO: ${{ vars.STAGING_REPO }}
+          STAGING_CLIENT_TOKEN: ${{ secrets.STAGING_CLIENT_TOKEN }}
+          STAGING_REVIEWER_TOKEN: ${{ secrets.STAGING_REVIEWER_TOKEN }}
+        run: python -m pytest staging -v -s

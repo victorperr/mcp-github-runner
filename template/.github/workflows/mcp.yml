@@ -1,0 +1,59 @@
+name: MCP server
+
+# push              -> upload the tool list to the gateway
+# workflow_dispatch -> the gateway starts one run per tool call
+on:
+  push:
+    branches: [main]
+    paths: ["**.py", "pyproject.toml", "uv.lock", ".github/workflows/mcp.yml"]
+  workflow_dispatch:
+    inputs:
+      call_id:
+        description: "Set by the gateway. Leave empty to re-upload the tool list."
+        required: false
+      approval:
+        description: "Set by the gateway: 'true' when the tool needs approval."
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+  id-token: write # lets the runner prove to the gateway which repo (and environment) it is
+
+# The gateway finds the run for a call by this title, so keep the call ID in it.
+run-name: ${{ inputs.call_id && format('MCP call {0}', inputs.call_id) || 'MCP manifest' }}
+
+jobs:
+  mcp:
+    # Your own runners, so tools can reach private services.
+    # Change the labels with the repo variable MCP_RUNS_ON, e.g. ["self-hosted", "linux", "mcp"].
+    runs-on: ${{ fromJSON(vars.MCP_RUNS_ON || '["self-hosted"]') }}
+    # Tools tagged "requires-approval" pause here until a reviewer approves.
+    # The gateway also checks this environment in the OIDC token, so skipping it doesn't work.
+    environment: ${{ inputs.approval == 'true' && 'mcp-approval' || '' }}
+    timeout-minutes: 15
+    steps:
+      # Pinned to a commit SHA. persist-credentials: false keeps the job's GITHUB_TOKEN
+      # out of .git/config, where tool code could otherwise read it.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      # For production, pin this to a commit SHA too.
+      - uses: victorperr/mcp-github-runner/action@v1
+        with:
+          mode: ${{ inputs.call_id && 'call' || 'manifest' }}
+          call-id: ${{ inputs.call_id }}
+          server: server.py:mcp
+          # Your gateway's address, set as a repo variable (Settings > Secrets and variables > Actions > Variables).
+          gateway-url: ${{ vars.MCP_GATEWAY_URL }}
+          approval-environment: mcp-approval
+          policy-file: mcp-runner.toml
+        env:
+          # Clients send this token to the gateway. Only its hash leaves the runner,
+          # and only manifest jobs get it: tool-call jobs never see it.
+          MCP_CLIENT_TOKEN: ${{ !inputs.call_id && secrets.MCP_CLIENT_TOKEN || '' }}
+          # Your tools' own secrets: they stay in GitHub, the gateway never sees them.
+          # Values of env vars named like *TOKEN*, *PASSWORD*, *KEY*... are redacted from results.
+          INTERNAL_API_URL: ${{ secrets.INTERNAL_API_URL }}
+          INTERNAL_API_TOKEN: ${{ secrets.INTERNAL_API_TOKEN }}

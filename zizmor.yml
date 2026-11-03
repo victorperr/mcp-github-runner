@@ -1,0 +1,7 @@
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        # Our own action is referenced by tag until its first release is cut; pin it to a SHA after that.
+        "victorperr/*": ref-pin
+        "*": hash-pin
