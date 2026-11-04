@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest", "pytest-asyncio", "fastmcp>=2.12,<3", "respx"]
+dev = ["pytest", "pytest-asyncio", "fastmcp>=4.1.4,<5", "respx"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
