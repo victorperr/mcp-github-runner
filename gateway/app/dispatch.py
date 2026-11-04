@@ -54,6 +54,10 @@ class Dispatcher(Protocol):
         """True only if ``run_id`` is a manual manifest run (no call ID). Fails closed."""
         ...
 
+    async def is_installed(self, server: ServerRecord) -> bool:
+        """True if the gateway's GitHub App is installed on the repo. Raises if GitHub can't be asked."""
+        ...
+
 
 class GitHubAppDispatcher:
     def __init__(self, app_id: str, private_key: str, api_url: str = "https://api.github.com"):
@@ -217,6 +221,13 @@ class GitHubAppDispatcher:
         """
         return await self._run_has_title(server, run_id, MANIFEST_RUN_TITLE)
 
+    async def is_installed(self, server: ServerRecord) -> bool:
+        try:
+            await self._installation_token(server)
+        except DispatchError:
+            return False
+        return True
+
 
 class LocalDispatcher:
     """Runs the call on this machine, as a runner would. For development only.
@@ -286,3 +297,6 @@ class LocalDispatcher:
     async def verify_manifest_run(self, server: ServerRecord, run_id: str) -> bool:
         # Dev registration (app.dev) uses push events; no dispatch run is ever a manifest run here.
         return False
+
+    async def is_installed(self, server: ServerRecord) -> bool:
+        return True

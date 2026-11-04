@@ -1,5 +1,7 @@
 import hashlib
 
+import httpx
+
 from app.oidc import DevSigner
 
 TOKEN_HASH = hashlib.sha256(b"client-secret").hexdigest()
@@ -63,6 +65,21 @@ def test_tool_call_run_cannot_upload_manifest(client, sign, app, dispatcher):
     dispatcher.verify_manifest = True
     assert client.put("/runner/manifest", json=body, headers=auth(tok)).status_code == 200
     assert app.state.store.get_server("1").token_hash == "0" * 64
+
+
+def test_first_registration_needs_app_installed(client, sign, dispatcher):
+    dispatcher.installed = False
+    assert register(client, sign).status_code == 403
+    dispatcher.installed = httpx.ConnectError("down")
+    assert register(client, sign).status_code == 503
+    dispatcher.installed = True
+    assert register(client, sign).status_code == 200
+
+
+def test_owner_allowlist(client, sign, app):
+    app.state.settings.allowed_owners = frozenset({"acme"})
+    assert register(client, sign).status_code == 403  # me/demo
+    assert register(client, sign, repository="ACME/tools", repository_id="9").status_code == 200
 
 
 def test_manifest_is_strict(client, sign):

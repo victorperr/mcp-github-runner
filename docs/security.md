@@ -61,6 +61,7 @@ Several ideas come from [GitHub Agentic Workflows](https://github.com/github/gh-
 | Control | Where |
 |---|---|
 | OIDC token verified: GitHub issuer, signature (JWKS), audience, expiry | `gateway/app/oidc.py` |
+| First registration only for repos that installed the gateway's GitHub App, and only for owners in `GATEWAY_ALLOWED_OWNERS` when set. Fails closed (`503`) if GitHub can't be asked | `runner_api.put_manifest`, `GitHubAppDispatcher.is_installed` |
 | Manifest only from `push`/`workflow_dispatch`, only from the branch **and workflow file** that registered first | `runner_api.put_manifest` |
 | A `workflow_dispatch` manifest upload must be a manual manifest run (title `MCP manifest`, confirmed with GitHub). Tool-call runs are dispatch runs too, so a token from a call job can't re-register the server or replace its client token | `GitHubAppDispatcher.verify_manifest_run` |
 | Manifest is strict: unknown fields, bad tool names, duplicates, non-positive limits → `422` | `runner_api.Manifest` |

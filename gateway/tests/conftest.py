@@ -15,6 +15,12 @@ class RecordingDispatcher:
         self.statuses = list(statuses or [])  # RunInfo values returned by run_status, in order
         self.verify = True
         self.verify_manifest = False
+        self.installed = True
+
+    async def is_installed(self, server):
+        if isinstance(self.installed, Exception):
+            raise self.installed
+        return self.installed
 
     async def dispatch(self, server, call_id, approval_env=None):
         self.calls.append((call_id, approval_env))

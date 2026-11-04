@@ -250,6 +250,14 @@ async def test_verify_manifest_run_needs_manifest_title(gh):
     assert await d.verify_manifest_run(_server(), "55") is False
 
 
+async def test_is_installed(gh):
+    d, mock = gh
+    assert await d.is_installed(_server()) is True
+    mock.get("/repos/other/repo/installation").respond(404)
+    other = ServerRecord("2", "other/repo", ".github/workflows/mcp.yml", "refs/heads/main", None, None)
+    assert await d.is_installed(other) is False
+
+
 async def test_verify_run_fails_closed(gh):
     d, mock = gh
     assert await d.verify_run(_server(), "c9", "local-1") is False  # not a GitHub run id
