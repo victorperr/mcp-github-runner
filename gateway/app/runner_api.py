@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from .audit import audit
 from .oidc import OIDCError, RunnerIdentity
 from .policy import Limits
+from .store import ServerRecord
 
 router = APIRouter(prefix="/runner")
 
@@ -120,13 +121,30 @@ async def put_manifest(request: Request, ident: RunnerIdentity = Depends(runner_
 
     store = request.app.state.store
     existing = store.get_server(ident.repository_id)
-    # The first upload pins the branch; uploads from other branches are refused so
-    # a feature branch can't silently replace the live tools.
+    # The first upload pins the branch and the workflow file. Uploads from another
+    # branch or workflow are refused, so a feature branch (or an unrelated workflow
+    # with id-token: write) can't replace the live tools or the client token.
     if existing and existing.ref != ident.ref:
         audit("manifest.rejected", repo=ident.repository, reason="ref mismatch", ref=ident.ref)
         raise HTTPException(
             409, f"This server is registered from {existing.ref}; refusing a manifest from {ident.ref}"
         )
+    if existing and existing.workflow_path != ident.workflow_path:
+        audit("manifest.rejected", repo=ident.repository, reason="workflow mismatch", workflow=ident.workflow_path)
+        raise HTTPException(
+            409, f"This server is registered from {existing.workflow_path}; "
+                 f"refusing a manifest from {ident.workflow_path}"
+        )
+    # Tool-call runs are workflow_dispatch runs too. A dispatch upload is accepted
+    # only if GitHub confirms it is a manual manifest run, so a token taken from a
+    # tool-call job can't re-register the server.
+    if ident.event_name == "workflow_dispatch":
+        candidate = existing or ServerRecord(
+            ident.repository_id, ident.repository, ident.workflow_path, ident.ref, None, None
+        )
+        if not await request.app.state.broker.dispatcher.verify_manifest_run(candidate, ident.run_id):
+            audit("manifest.rejected", repo=ident.repository, reason="not a manifest run", run_id=ident.run_id)
+            raise HTTPException(403, "workflow_dispatch manifest uploads must come from a run with no call_id")
     if not existing and not manifest.client_token_sha256:
         raise HTTPException(422, "First registration needs MCP_CLIENT_TOKEN set as a repo secret")
 

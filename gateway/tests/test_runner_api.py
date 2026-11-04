@@ -41,6 +41,30 @@ def test_manifest_rejects_other_events_and_refs(client, sign):
     assert register(client, sign, ref="refs/heads/feature").status_code == 409
 
 
+def test_manifest_pins_workflow_file(client, sign, app):
+    # Another workflow with id-token: write on the same branch can't take the server over.
+    assert register(client, sign).status_code == 200
+    r = register(client, sign, {"client_token_sha256": "0" * 64}, workflow_path=".github/workflows/deploy.yml")
+    assert r.status_code == 409
+    assert app.state.store.get_server("1").token_hash == TOKEN_HASH
+
+
+def test_tool_call_run_cannot_upload_manifest(client, sign, app, dispatcher):
+    # A token from a tool-call job (also workflow_dispatch) must not re-register the
+    # server with its own client token.
+    assert register(client, sign).status_code == 200
+    body = {"tools": [ADD_TOOL], "client_token_sha256": "0" * 64}
+    tok = sign("workflow_dispatch", run_id="77")
+    r = client.put("/runner/manifest", json=body, headers=auth(tok))
+    assert r.status_code == 403
+    assert app.state.store.get_server("1").token_hash == TOKEN_HASH
+
+    # A manual manifest run (confirmed by GitHub) is still allowed.
+    dispatcher.verify_manifest = True
+    assert client.put("/runner/manifest", json=body, headers=auth(tok)).status_code == 200
+    assert app.state.store.get_server("1").token_hash == "0" * 64
+
+
 def test_manifest_is_strict(client, sign):
     # Unknown fields, bad tool names, duplicates and bad limits are all rejected, never ignored.
     assert register(client, sign, {"surprise": True}).status_code == 422

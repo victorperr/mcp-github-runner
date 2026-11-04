@@ -24,6 +24,7 @@ from .store import ServerRecord
 logger = logging.getLogger(__name__)
 
 RUN_TITLE = "MCP call {call_id}"  # must match run-name in the template workflow
+MANIFEST_RUN_TITLE = "MCP manifest"  # run-name of a dispatch run with no call_id
 ENV_CHECK_TTL = 300
 
 
@@ -47,6 +48,10 @@ class Dispatcher(Protocol):
 
     async def verify_run(self, server: ServerRecord, call_id: str, run_id: str) -> bool:
         """True only if ``run_id`` is the run started for ``call_id``. Fails closed."""
+        ...
+
+    async def verify_manifest_run(self, server: ServerRecord, run_id: str) -> bool:
+        """True only if ``run_id`` is a manual manifest run (no call ID). Fails closed."""
         ...
 
 
@@ -173,12 +178,8 @@ class GitHubAppDispatcher:
             logger.warning("run status lookup failed for call %s: %s", call_id, exc)
             return None
 
-    async def verify_run(self, server: ServerRecord, call_id: str, run_id: str) -> bool:
-        """Ask GitHub whether this run was started for this call.
-
-        Binds a call to one run: a leaked OIDC token from another run of the same
-        workflow can't claim it. Any doubt (API error, mismatch) means no.
-        """
+    async def _run_has_title(self, server: ServerRecord, run_id: str, title: str) -> bool:
+        """True only if GitHub says ``run_id`` is a dispatch run of the server's workflow with this title."""
         if not run_id.isdigit():
             return False
         try:
@@ -191,14 +192,30 @@ class GitHubAppDispatcher:
                 return False
             run = r.json()
         except (httpx.HTTPError, DispatchError, ValueError) as exc:
-            logger.warning("run verification failed for call %s: %s", call_id, exc)
+            logger.warning("run verification failed for run %s: %s", run_id, exc)
             return False
         return (
-            run.get("display_title") == RUN_TITLE.format(call_id=call_id)
+            run.get("display_title") == title
             and run.get("event") == "workflow_dispatch"
             and run.get("path") == server.workflow_path
             and str(run.get("repository", {}).get("id")) == server.repository_id
         )
+
+    async def verify_run(self, server: ServerRecord, call_id: str, run_id: str) -> bool:
+        """Ask GitHub whether this run was started for this call.
+
+        Binds a call to one run: a leaked OIDC token from another run of the same
+        workflow can't claim it. Any doubt (API error, mismatch) means no.
+        """
+        return await self._run_has_title(server, run_id, RUN_TITLE.format(call_id=call_id))
+
+    async def verify_manifest_run(self, server: ServerRecord, run_id: str) -> bool:
+        """Ask GitHub whether this dispatch run is a manual manifest upload, not a tool call.
+
+        Tool-call runs are workflow_dispatch runs too; without this check, code
+        running in a call job could re-register the server with its own client token.
+        """
+        return await self._run_has_title(server, run_id, MANIFEST_RUN_TITLE)
 
 
 class LocalDispatcher:
@@ -265,3 +282,7 @@ class LocalDispatcher:
 
     async def verify_run(self, server: ServerRecord, call_id: str, run_id: str) -> bool:
         return self._runs.get(call_id) == run_id
+
+    async def verify_manifest_run(self, server: ServerRecord, run_id: str) -> bool:
+        # Dev registration (app.dev) uses push events; no dispatch run is ever a manifest run here.
+        return False

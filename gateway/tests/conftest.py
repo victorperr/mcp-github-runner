@@ -14,6 +14,7 @@ class RecordingDispatcher:
         self.calls: list[tuple[str, str | None]] = []
         self.statuses = list(statuses or [])  # RunInfo values returned by run_status, in order
         self.verify = True
+        self.verify_manifest = False
 
     async def dispatch(self, server, call_id, approval_env=None):
         self.calls.append((call_id, approval_env))
@@ -23,6 +24,9 @@ class RecordingDispatcher:
 
     async def verify_run(self, server, call_id, run_id):
         return self.verify
+
+    async def verify_manifest_run(self, server, run_id):
+        return self.verify_manifest
 
 
 def make_settings(tmp_path: Path, **overrides) -> Settings:

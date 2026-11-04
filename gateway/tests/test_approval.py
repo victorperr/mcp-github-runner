@@ -241,6 +241,15 @@ async def test_verify_run_accepts_only_the_run_started_for_the_call(gh):
         assert await d.verify_run(_server(), "c9", "55") is False
 
 
+async def test_verify_manifest_run_needs_manifest_title(gh):
+    d, mock = gh
+    route = mock.get("/repos/me/demo/actions/runs/55")
+    route.respond(json=_run(display_title="MCP manifest"))
+    assert await d.verify_manifest_run(_server(), "55") is True
+    route.respond(json=_run())  # a tool-call run
+    assert await d.verify_manifest_run(_server(), "55") is False
+
+
 async def test_verify_run_fails_closed(gh):
     d, mock = gh
     assert await d.verify_run(_server(), "c9", "local-1") is False  # not a GitHub run id
