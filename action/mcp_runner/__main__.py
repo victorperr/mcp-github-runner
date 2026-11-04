@@ -19,7 +19,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .gateway_client import DEFAULT_AUDIENCE, GatewayClient, GatewayError
+from .gateway_client import GatewayClient, GatewayError, default_audience
 from .loader import LoadError
 from .manifest import DEFAULT_APPROVAL_ENVIRONMENT, hash_client_token
 from .policy import DEFAULT_POLICY_FILE, PolicyError
@@ -197,7 +197,8 @@ def main(argv: list[str] | None = None) -> int:
         p = sub.add_parser(name)
         p.add_argument("--server", default=os.environ.get("MCP_SERVER", "server.py"))
         p.add_argument("--gateway", default=os.environ.get("MCP_GATEWAY_URL", ""))
-        p.add_argument("--audience", default=os.environ.get("MCP_GATEWAY_AUDIENCE", DEFAULT_AUDIENCE))
+        p.add_argument("--audience", default=os.environ.get("MCP_GATEWAY_AUDIENCE", ""),
+                       help="OIDC audience the gateway expects (default: the gateway URL)")
         p.add_argument("--policy", default=os.environ.get("MCP_POLICY_FILE") or DEFAULT_POLICY_FILE)
         p.add_argument(
             "--approval-environment",
@@ -211,6 +212,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.gateway and not getattr(args, "dry_run", False):
         parser.error("--gateway (or MCP_GATEWAY_URL) is required")
+    args.audience = args.audience or default_audience(args.gateway)
 
     try:
         return cmd_manifest(args) if args.mode == "manifest" else cmd_call(args)

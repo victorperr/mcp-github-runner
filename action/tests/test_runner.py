@@ -198,6 +198,7 @@ def test_credentials_from_stdin_never_reach_tool_code(monkeypatch, tmp_path):
         posted = respx.post(f"{GW}/runner/calls/{CALL_ID}/result").respond(json={"ok": True})
         assert main(["call", "--gateway", GW, "--call-id", CALL_ID]) == 0
     assert oidc.calls.last.request.headers["Authorization"] == "bearer req-secret-123"
+    assert oidc.calls.last.request.url.params["audience"] == GW  # one audience per gateway
     text = json.loads(posted.calls.last.request.content)["result"]["content"][0]["text"]
     assert "req-secret-123" not in text and "oidc.test" not in text
     assert "MCP_RUNNER_CREDENTIALS" not in text

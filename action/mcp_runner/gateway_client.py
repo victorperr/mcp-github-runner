@@ -7,11 +7,13 @@ from typing import Any
 
 import httpx
 
-DEFAULT_AUDIENCE = "mcp-github-runner"
-
-
 class GatewayError(Exception):
     pass
+
+
+def default_audience(gateway_url: str) -> str:
+    """The OIDC audience a gateway expects by default: its own URL, without trailing slash."""
+    return gateway_url.rstrip("/")
 
 
 class GatewayClient:

@@ -45,6 +45,8 @@ def make_settings(tmp_path: Path, **overrides) -> Settings:
     s.heartbeat_interval = 0.2
     for k, v in overrides.items():
         setattr(s, k, v)
+    if "oidc_audience" not in overrides:
+        s.oidc_audience = s.public_url.rstrip("/")  # what Settings derives by default
     return s
 
 

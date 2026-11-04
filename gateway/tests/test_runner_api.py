@@ -103,6 +103,16 @@ def test_limits_above_gateway_caps_are_clamped(client, sign, app):
     assert any("call_timeout_seconds" in w for w in body["warnings"])
 
 
+def test_audience_defaults_to_public_url(monkeypatch):
+    from app.config import Settings
+
+    monkeypatch.delenv("GATEWAY_OIDC_AUDIENCE", raising=False)
+    monkeypatch.setenv("GATEWAY_PUBLIC_URL", "https://gw.example.com/")
+    assert Settings().oidc_audience == "https://gw.example.com"
+    monkeypatch.setenv("GATEWAY_OIDC_AUDIENCE", "custom")
+    assert Settings().oidc_audience == "custom"
+
+
 def test_bad_oidc_tokens(client, app, tmp_path):
     assert client.put("/runner/manifest", json={}).status_code == 401
     assert client.put("/runner/manifest", json={}, headers=auth("garbage")).status_code == 401

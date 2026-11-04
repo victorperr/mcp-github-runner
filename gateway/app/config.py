@@ -15,7 +15,9 @@ def _env(name: str, default: str = "") -> str:
 class Settings:
     public_url: str = field(default_factory=lambda: _env("GATEWAY_PUBLIC_URL", "http://localhost:8000"))
     db_path: str = field(default_factory=lambda: _env("GATEWAY_DB_PATH", "gateway.db"))
-    oidc_audience: str = field(default_factory=lambda: _env("GATEWAY_OIDC_AUDIENCE", "mcp-github-runner"))
+    # Empty = the public URL (without trailing slash). One audience per deployment means a
+    # runner token sent to another gateway (staging, self-hosted...) can't be replayed here.
+    oidc_audience: str = field(default_factory=lambda: _env("GATEWAY_OIDC_AUDIENCE"))
     call_timeout: float = field(default_factory=lambda: float(_env("GATEWAY_CALL_TIMEOUT", "300")))
     # Calls to tools that need approval wait for a person, so they get longer.
     approval_timeout: float = field(default_factory=lambda: float(_env("GATEWAY_APPROVAL_TIMEOUT", "900")))
@@ -50,6 +52,8 @@ class Settings:
     github_api_url: str = field(default_factory=lambda: _env("GITHUB_API_URL", "https://api.github.com"))
 
     def __post_init__(self) -> None:
+        if not self.oidc_audience:
+            self.oidc_audience = self.public_url.rstrip("/")
         key_path = _env("GITHUB_APP_PRIVATE_KEY_PATH")
         if not self.github_app_private_key and key_path:
             self.github_app_private_key = Path(key_path).read_text()

@@ -62,6 +62,7 @@ Several ideas come from [GitHub Agentic Workflows](https://github.com/github/gh-
 | Control | Where |
 |---|---|
 | OIDC token verified: GitHub issuer, signature (JWKS), audience, expiry | `gateway/app/oidc.py` |
+| The audience is the gateway's own URL by default (on both sides), so a token sent to another deployment (staging, self-hosted, or a malicious one) can't be replayed here | `config.Settings.oidc_audience`, `gateway_client.default_audience` |
 | GitHub's signing keys are cached and refreshed at most once a minute, so tokens with made-up key IDs can't make the gateway call GitHub on every request | `oidc.JWKSCache` |
 | First registration only for repos that installed the gateway's GitHub App, and only for owners in `GATEWAY_ALLOWED_OWNERS` when set. Fails closed (`503`) if GitHub can't be asked | `runner_api.put_manifest`, `GitHubAppDispatcher.is_installed` |
 | Manifest only from `push`/`workflow_dispatch`, only from the branch **and workflow file** that registered first | `runner_api.put_manifest` |

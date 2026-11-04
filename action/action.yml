@@ -25,9 +25,9 @@ inputs:
     description: "Gateway base URL (https://...). No default on purpose: results must only go to a gateway you run."
     required: true
   audience:
-    description: "OIDC audience the gateway expects."
+    description: "OIDC audience the gateway expects. Empty (default) means the gateway URL, which is also the gateway's default."
     required: false
-    default: "mcp-github-runner"
+    default: ""
   approval-environment:
     description: "GitHub Environment (with required reviewers) that tools tagged 'requires-approval' must run in."
     required: false
