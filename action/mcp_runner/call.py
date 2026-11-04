@@ -7,9 +7,7 @@ from typing import Any
 
 from fastmcp import Client
 
-
-def error_result(message: str) -> dict[str, Any]:
-    return {"content": [{"type": "text", "text": message}], "isError": True}
+from .results import error_result
 
 
 async def run_tool(server: Any, tool: str, arguments: dict[str, Any] | None) -> dict[str, Any]:

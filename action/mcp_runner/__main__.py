@@ -2,36 +2,46 @@
 
     python -m mcp_runner manifest --server server.py:mcp --gateway URL
     python -m mcp_runner call --server server.py:mcp --gateway URL --call-id ID
+
+This process is the supervisor: it holds the runner's credentials and talks to
+the gateway, but never imports the repo's code. The server is loaded and run in
+a separate tool process (``worker.py``) whose environment has no credentials.
 """
 
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import os
+import subprocess
 import sys
+import tempfile
+from pathlib import Path
 from typing import Any
 
-from .call import error_result, run_tool
 from .gateway_client import DEFAULT_AUDIENCE, GatewayClient, GatewayError
-from .loader import LoadError, load_server
-from .manifest import DEFAULT_APPROVAL_ENVIRONMENT, build_manifest, hash_client_token
-from .policy import DEFAULT_POLICY_FILE, PolicyError, load_policy
+from .loader import LoadError
+from .manifest import DEFAULT_APPROVAL_ENVIRONMENT, hash_client_token
+from .policy import DEFAULT_POLICY_FILE, PolicyError
+from .results import RUNNER_RESULT_TOO_LARGE, error_result, refusal
 from .security import (
     OIDCSource,
     Redactor,
     SecurityError,
     check_client_token,
+    harden_process,
+    read_credentials,
     scrub_environment,
     unverified_claims,
     validate_call_id,
 )
 
-# Denial codes used by the runner. The gateway uses the same numbering (see gateway/app/policy.py).
-RUNNER_TOOL_NOT_ALLOWED = -32011
-RUNNER_APPROVAL_MISSING = -32012
-RUNNER_RESULT_TOO_LARGE = -32013
+# Folder that holds the mcp_runner package, put on the tool process's PYTHONPATH.
+PACKAGE_ROOT = str(Path(__file__).resolve().parent.parent)
+
+
+class ToolProcessError(Exception):
+    pass
 
 
 def _write_summary(text: str) -> None:
@@ -41,27 +51,57 @@ def _write_summary(text: str) -> None:
             f.write(text + "\n")
 
 
-def _refusal(code: int, message: str) -> dict[str, Any]:
-    result = error_result(f"Refused by the runner: {message}")
-    result["_meta"] = {"mcp-github-runner/denial": {"code": code, "by": "runner", "reason": message}}
-    return result
-
-
 def _secure_start(audience: str) -> tuple[OIDCSource, Redactor, str]:
-    """Take credentials out of the environment before any user code is imported."""
+    """Take credentials out of the environment before any tool process starts."""
     redactor = Redactor()  # snapshot secret-looking values while they're still visible
-    oidc = OIDCSource(audience)
+    client_token = ""
+    if os.environ.pop("MCP_RUNNER_CREDENTIALS", "") == "stdin":
+        # action.yml: credentials arrive on stdin and were never in our environment.
+        creds = read_credentials()
+        oidc = OIDCSource(audience, url=creds.oidc_request_url, request_token=creds.oidc_request_token)
+        client_token = creds.client_token
+    else:
+        oidc = OIDCSource(audience)  # local runs and tests: credentials in the environment
     removed = scrub_environment()
-    for value in [*oidc.secrets, *removed.values()]:
+    client_token = client_token or removed.get("MCP_CLIENT_TOKEN", "")
+    for value in [*oidc.secrets, client_token, *removed.values()]:
         redactor.add(value)
-    return oidc, redactor, removed.get("MCP_CLIENT_TOKEN", "")
+    harden_process()
+    return oidc, redactor, client_token
+
+
+def _run_tool_process(mode: str, args: argparse.Namespace, extra: dict[str, Any]) -> dict[str, Any]:
+    """Run worker.py in a fresh process and return its response."""
+    request = {
+        "server": args.server,
+        "policy": args.policy,
+        "approval_environment": args.approval_environment,
+        **extra,
+    }
+    env = dict(os.environ)  # already scrubbed by _secure_start
+    env["PYTHONPATH"] = os.pathsep.join(p for p in (PACKAGE_ROOT, env.get("PYTHONPATH")) if p)
+    # mkdtemp gives a folder only this user can read; arguments may be sensitive.
+    with tempfile.TemporaryDirectory(prefix="mcp-runner-", dir=os.environ.get("RUNNER_TEMP") or None) as tmp:
+        io = Path(tmp)
+        (io / "request.json").write_text(json.dumps(request), encoding="utf-8")
+        proc = subprocess.run(  # noqa: S603 - fixed command, no shell
+            [sys.executable, "-P", "-m", "mcp_runner", "worker", mode, tmp],
+            env=env,
+            stdin=subprocess.DEVNULL,
+            check=False,
+        )
+        response = io / "response.json"
+        if not response.is_file():
+            raise ToolProcessError(f"The tool process exited with code {proc.returncode} without a response")
+        out = json.loads(response.read_text(encoding="utf-8"))
+    if not out.get("ok"):
+        raise LoadError(out.get("error") or "The tool process failed")
+    return out
 
 
 def cmd_manifest(args: argparse.Namespace) -> int:
     oidc, _, client_token = _secure_start(args.audience)
-    policy = load_policy(args.policy)
-    server = load_server(args.server)
-    manifest = asyncio.run(build_manifest(server, args.approval_environment, policy))
+    manifest = _run_tool_process("manifest", args, {})["manifest"]
     print(json.dumps(manifest, indent=2))
 
     if args.dry_run:
@@ -93,35 +133,25 @@ def cmd_manifest(args: argparse.Namespace) -> int:
     return 0
 
 
-async def _execute(args: argparse.Namespace, call: dict[str, Any], claims: dict[str, Any]) -> dict[str, Any]:
-    """Runner-side guards, in order. They don't trust anything the gateway decided."""
+def _execute(args: argparse.Namespace, call: dict[str, Any], claims: dict[str, Any]) -> dict[str, Any]:
+    """Run the call in the tool process. Guards run there, before the tool (see worker._call)."""
     try:
-        policy = load_policy(args.policy)
-        server = load_server(args.server)
-        manifest = await build_manifest(server, args.approval_environment, policy)
-    except (LoadError, PolicyError) as exc:
+        return _run_tool_process("call", args, {
+            "tool": call.get("tool"),
+            "arguments": call.get("arguments"),
+            # From our own OIDC token, not from the gateway.
+            "environment": claims.get("environment"),
+        })["result"]
+    except (LoadError, PolicyError, ToolProcessError) as exc:
         return error_result(str(exc))
-
-    tool = call.get("tool")
-    published = {t["name"] for t in manifest["tools"]}
-    # 1. The tool must be one this repo publishes (exists and passes tools.allow).
-    if tool not in published:
-        return _refusal(RUNNER_TOOL_NOT_ALLOWED, f"tool '{tool}' is not published by this server")
-    # 2. Gated tools only run in a job that passed the approval environment.
-    if tool in manifest["approval_required"]:
-        env = (claims.get("environment") or "").lower()
-        if env != args.approval_environment.lower():
-            return _refusal(
-                RUNNER_APPROVAL_MISSING,
-                f"tool '{tool}' requires approval, but this job did not run in the "
-                f"'{args.approval_environment}' environment",
-            )
-    return await run_tool(server, tool, call.get("arguments"))
 
 
 def cmd_call(args: argparse.Namespace) -> int:
     call_id = validate_call_id(args.call_id)
     oidc, redactor, _ = _secure_start(args.audience)
+    if os.name == "nt" and os.environ.get("GITHUB_ACTIONS") == "true":
+        print("::warning::On Windows runners, tool code runs as the same user as the runner and can read "
+              "other processes' memory. Prefer Linux runners for tools that handle untrusted input.")
     first_token = oidc.token()
     claims = unverified_claims(first_token)
     tokens = iter([first_token])
@@ -135,7 +165,7 @@ def cmd_call(args: argparse.Namespace) -> int:
         call = gw.get_call(call_id)
         # Tool name is logged; arguments are not, since they may be sensitive.
         print(f"Running tool '{call.get('tool')}' for call {call_id}")
-        result = asyncio.run(_execute(args, call, claims))
+        result = _execute(args, call, claims)
 
         result, replaced = redactor.redact(result)
         if replaced:
@@ -145,7 +175,7 @@ def cmd_call(args: argparse.Namespace) -> int:
         limit = int(call.get("max_result_bytes") or 0) or 4 * 1024 * 1024
         size = len(json.dumps(result).encode())
         if size > limit:
-            result = _refusal(RUNNER_RESULT_TOO_LARGE, f"result is {size} bytes; the limit is {limit}")
+            result = refusal(RUNNER_RESULT_TOO_LARGE, f"result is {size} bytes; the limit is {limit}")
 
         gw.post_result(call_id, {"result": result})
         print("Result sent" + (" (tool reported an error)" if result.get("isError") else ""))
@@ -155,6 +185,12 @@ def cmd_call(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["worker"]:
+        from .worker import main as worker_main
+
+        return worker_main(argv[1:])
+
     parser = argparse.ArgumentParser(prog="mcp_runner")
     sub = parser.add_subparsers(dest="mode", required=True)
     for name in ("manifest", "call"):
@@ -178,7 +214,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         return cmd_manifest(args) if args.mode == "manifest" else cmd_call(args)
-    except (LoadError, GatewayError, PolicyError, SecurityError) as exc:
+    except (LoadError, GatewayError, PolicyError, SecurityError, ToolProcessError) as exc:
         print(f"::error::{exc}")
         return 1
 

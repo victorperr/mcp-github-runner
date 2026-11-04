@@ -76,10 +76,10 @@ Several ideas come from [GitHub Agentic Workflows](https://github.com/github/gh-
 
 | Control | Where |
 |---|---|
-| **OIDC request token, Actions runtime tokens and `MCP_CLIENT_TOKEN` are removed from the environment before user code is imported.** Tool code and anything it spawns can't impersonate the runner | `mcp_runner/security.OIDCSource`, `scrub_environment` |
+| **Tool code runs in its own process, which never holds runner credentials.** The action step passes the OIDC request token and `MCP_CLIENT_TOKEN` to `mcp_runner` on stdin and removes them, plus the Actions runtime tokens, from the environment before `exec`. So neither the shell, the supervisor nor the tool process has them in `/proc/<pid>/environ`. The supervisor keeps them in memory, is marked non-dumpable on Linux (no `/proc/<pid>/mem` or `ptrace` by same-user processes), and starts the tool process (`worker.py`) with a clean environment | `action.yml`, `mcp_runner/security.read_credentials`, `harden_process`, `mcp_runner/worker.py` |
 | `MCP_CLIENT_TOKEN` isn't even passed to tool-call jobs, only to manifest jobs | template `mcp.yml` |
 | `actions/checkout` with `persist-credentials: false`, so `GITHUB_TOKEN` isn't left in `.git/config` | template `mcp.yml` |
-| **The runner re-checks everything itself, without trusting the gateway:** the tool must be published by this repo's code and policy, and a gated tool needs its own OIDC token to show the approval environment. This holds even if the gateway is compromised | `mcp_runner/__main__._execute` |
+| **The runner re-checks everything itself, without trusting the gateway:** the tool must be published by this repo's code and policy, and a gated tool needs its own OIDC token to show the approval environment. This holds even if the gateway is compromised | `mcp_runner/worker._call` |
 | `python -P` so files in the repo can't shadow the runner's own modules | `action.yml` |
 | Dependencies installed from `uv.lock` (`--locked`), with a warning if there is no lockfile | `action.yml` |
 
@@ -125,7 +125,8 @@ These aren't covered, or only partly:
 - **A compromised gateway** can read arguments and results as they pass through, give clients fake results, and start *ungated* tools. It can't run gated tools without approval, because the runner checks that itself, and it never sees tool secrets. Run the gateway as sensitive infrastructure. End-to-end encryption between client and runner would close this but isn't built.
 - **Prompt injection through tool results** (for example an internal page containing instructions for the agent) is the client's problem to handle. Keep tools narrow, and gate anything with side effects.
 - **No network egress firewall on the runner.** gh-aw puts its agent behind a firewall (AWF) with a domain allowlist. Here, tool code can reach anything the runner's network can. Limit egress with network policy or a proxy (see [self-hosted.md §1](self-hosted.md#outbound-access-the-runner-needs)).
-- **No process sandbox.** Tool code runs as the runner user, and redaction only catches values it knows about. Use ephemeral runners and least-privileged credentials.
+- **No process sandbox.** Tool code runs as the runner user, and redaction only catches values it knows about. Its process holds no runner credentials, but on a host with `kernel.yama.ptrace_scope=0` it could still attach to the Actions runner's own processes. Keep `ptrace_scope` at 1 or more, and use ephemeral runners and least-privileged credentials. On **Windows** runners, any process of the same user can read another's memory, so the credential isolation is weaker there.
+- **Dependencies run next to the credentials.** The supervisor runs in the project's virtualenv, so a malicious dependency (for example a `.pth` file) runs before the credentials are read. `uv sync --locked` and dependency review are the control here.
 - **Repo writers are fully trusted.** Anyone who can push to `main` can change tools and policy. Use branch protection, required reviews and `CODEOWNERS` on `server.py`, `mcp-runner.toml` and `.github/workflows/`.
 - **Client auth is a shared bearer token** (no per-user identity, no expiry). Rotate it when people leave. GitHub OAuth per user is the planned replacement.
 - **Single gateway instance:** state is in SQLite and memory, with no high availability.

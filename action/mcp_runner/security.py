@@ -1,8 +1,11 @@
 """Runner-side protections. These hold even if the gateway is compromised.
 
-- OIDCSource takes the Actions OIDC request credentials out of the environment
-  *before* user code is imported, so tool code (and anything it spawns) can't
-  mint tokens that impersonate the runner.
+- read_credentials takes the OIDC request credentials and client token from
+  stdin: action.yml removes them from the environment before it execs Python,
+  so no process in the chain has them in /proc/<pid>/environ.
+- OIDCSource holds those credentials in the supervisor's memory only. Tool code
+  runs in a separate process (worker.py), and harden_process stops same-user
+  processes from reading the supervisor's memory on Linux.
 - scrub_environment removes other runtime credentials the tools don't need.
 - Redactor replaces secret values in tool results before they leave the runner.
 - unverified_claims reads our own OIDC token, which came straight from the
@@ -15,8 +18,10 @@ import base64
 import json
 import os
 import re
+import sys
 from collections.abc import MutableMapping
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, TextIO
 
 import httpx
 
@@ -43,15 +48,67 @@ class SecurityError(Exception):
     pass
 
 
+@dataclass
+class Credentials:
+    oidc_request_url: str = ""
+    oidc_request_token: str = ""
+    client_token: str = ""
+
+
+def read_credentials(stream: TextIO | None = None) -> Credentials:
+    """Read the credentials action.yml writes on stdin, one per line, then detach stdin.
+
+    Line order: OIDC request URL, OIDC request token, client token (empty lines allowed).
+    """
+    stream = sys.stdin if stream is None else stream
+    lines = (stream.read().split("\n") + ["", "", ""])[:3]
+    if stream is sys.stdin:
+        # Replace fd 0 so nothing keeps the pipe (or bash's here-string file) open.
+        try:
+            devnull = os.open(os.devnull, os.O_RDONLY)
+            os.dup2(devnull, 0)
+            os.close(devnull)
+        except OSError:
+            pass
+    return Credentials(*(line.strip() for line in lines))
+
+
+def harden_process() -> None:
+    """Linux: mark this process non-dumpable.
+
+    Other processes of the same user (tool code included) then can't read its
+    memory through /proc/<pid>/mem or attach with ptrace. Children started with
+    exec are dumpable again, which is fine: they hold no credentials.
+    """
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.prctl(4, 0, 0, 0, 0)  # PR_SET_DUMPABLE, 0
+    except (OSError, AttributeError):  # pragma: no cover - libc without prctl
+        pass
+
+
 class OIDCSource:
     """Holds the OIDC request credentials in memory and removes them from the environment."""
 
-    def __init__(self, audience: str, environ: MutableMapping[str, str] | None = None):
+    def __init__(
+        self,
+        audience: str,
+        environ: MutableMapping[str, str] | None = None,
+        *,
+        url: str | None = None,
+        request_token: str | None = None,
+    ):
         env = os.environ if environ is None else environ
         self.audience = audience
         self._override = env.pop("MCP_RUNNER_OIDC_TOKEN", None)  # local testing only
-        self._url = env.pop("ACTIONS_ID_TOKEN_REQUEST_URL", None)
-        self._request_token = env.pop("ACTIONS_ID_TOKEN_REQUEST_TOKEN", None)
+        env_url = env.pop("ACTIONS_ID_TOKEN_REQUEST_URL", None)
+        env_token = env.pop("ACTIONS_ID_TOKEN_REQUEST_TOKEN", None)
+        self._url = url or env_url
+        self._request_token = request_token or env_token
 
     @property
     def secrets(self) -> list[str]:
