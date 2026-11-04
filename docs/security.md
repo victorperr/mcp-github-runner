@@ -42,7 +42,7 @@ Several ideas come from [GitHub Agentic Workflows](https://github.com/github/gh-
 | Control | Where |
 |---|---|
 | Bearer token per server, stored only as SHA-256 and compared in constant time | `mcp_endpoint._token_ok` |
-| Unknown repo and wrong token give the same `401`, so you can't probe which repos are registered | `mcp_endpoint.TenantMCPApp` |
+| Unknown repo and wrong token give the same `401` after the same work (one indexed lookup, one hash), so neither the answer nor its timing tells you which repos are registered | `mcp_endpoint.TenantMCPApp` |
 | Client token must be at least 32 characters (checked on the runner, which is the only place that sees it) | `mcp_runner/security.check_client_token` |
 | Policy checks before anything is dispatched, in order: **tool → argument size → argument schema → hourly rate → concurrency** | `gateway/app/policy.evaluate` |
 | Tools stay isolated between repos (no shared schema cache across tenants) | `mcp_endpoint.build_mcp_server` |

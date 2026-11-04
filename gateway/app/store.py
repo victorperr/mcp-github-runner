@@ -2,6 +2,8 @@
 
 v1 runs as a single instance. Arguments and results are removed as soon as
 they have been delivered, so the gateway keeps as little user data as possible.
+Parsed servers are cached in memory and the cache is dropped on every upsert,
+which is safe because only this process writes the database.
 """
 
 from __future__ import annotations
@@ -10,7 +12,7 @@ import json
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 SCHEMA = """
@@ -46,6 +48,8 @@ class ServerRecord:
     ref: str
     token_hash: str | None
     manifest: dict[str, Any] | None
+    # Values derived from the manifest (e.g. parsed MCP tools), kept as long as this record is.
+    derived: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
 
     def approval_environment_for(self, tool: str) -> str | None:
         """The Environment a call to ``tool`` must run in, or None if no approval is needed."""
@@ -79,10 +83,25 @@ class Store:
         self._db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self._db.row_factory = sqlite3.Row
         self._lock = threading.Lock()
+        self._servers: dict[str, ServerRecord] = {}  # repository_id -> parsed record
+        self._generation = 0  # bumped on every upsert, so a read racing a write isn't cached
         with self._lock:
+            # WAL: readers don't wait for the writer, and commits don't fsync the whole
+            # file. synchronous=NORMAL is durable across process crashes in WAL mode.
+            self._db.execute("PRAGMA journal_mode=WAL")
+            self._db.execute("PRAGMA synchronous=NORMAL")
             self._db.executescript(SCHEMA)
 
     # -- servers -----------------------------------------------------------
+
+    def find_token_hash(self, full_name: str) -> tuple[str, str | None] | None:
+        """(repository_id, token_hash) for a repo name, or None. One indexed lookup,
+        no manifest parsing, so known and unknown repos cost the same."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT repository_id, token_hash FROM servers WHERE full_name = ?", (full_name,)
+            ).fetchone()
+        return None if row is None else (row["repository_id"], row["token_hash"])
 
     def _server(self, row: sqlite3.Row | None) -> ServerRecord | None:
         if row is None:
@@ -97,14 +116,22 @@ class Store:
         )
 
     def get_server_by_name(self, full_name: str) -> ServerRecord | None:
-        with self._lock:
-            row = self._db.execute("SELECT * FROM servers WHERE full_name = ?", (full_name,)).fetchone()
-        return self._server(row)
+        found = self.find_token_hash(full_name)
+        return None if found is None else self.get_server(found[0])
 
     def get_server(self, repository_id: str) -> ServerRecord | None:
         with self._lock:
+            cached = self._servers.get(repository_id)
+            if cached is not None:
+                return cached
+            generation = self._generation
             row = self._db.execute("SELECT * FROM servers WHERE repository_id = ?", (repository_id,)).fetchone()
-        return self._server(row)
+        server = self._server(row)  # JSON parsing outside the lock
+        if server is not None:
+            with self._lock:
+                if generation == self._generation:
+                    self._servers[repository_id] = server
+        return server
 
     def upsert_server(
         self,
@@ -135,6 +162,8 @@ class Store:
                 """,
                 (repository_id, full_name, workflow_path, ref, token_hash, json.dumps(manifest), time.time()),
             )
+            self._servers.clear()  # rare; also drops a row freed by a rename
+            self._generation += 1
 
     # -- calls -------------------------------------------------------------
 

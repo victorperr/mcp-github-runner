@@ -38,19 +38,19 @@ def build_mcp_server(store: Store, broker: CallBroker) -> Server:
 
     # Handlers are registered directly instead of with @mcp.list_tools/@mcp.call_tool:
     # those decorators cache tool schemas by name in one dict shared by all repos.
+    # The server record comes from TenantMCPApp, which read it for this request.
     async def list_tools(_: types.ListToolsRequest) -> types.ServerResult:
-        server = store.get_server(_current_server(mcp).repository_id)
-        tools = [types.Tool.model_validate(t) for t in (server.manifest or {}).get("tools", [])] if server else []
+        server = _current_server(mcp)
+        tools = server.derived.get("mcp_tools")
+        if tools is None:  # parsed once per manifest version (the record is replaced on upsert)
+            tools = [types.Tool.model_validate(t) for t in (server.manifest or {}).get("tools", [])]
+            server.derived["mcp_tools"] = tools
         return types.ServerResult(types.ListToolsResult(tools=tools))
 
     async def call_tool(req: types.CallToolRequest) -> types.ServerResult:
         ctx = mcp.request_context
-        server = store.get_server(_current_server(mcp).repository_id)
+        server = _current_server(mcp)
         name = req.params.name
-        if server is None:
-            return types.ServerResult(
-                types.CallToolResult(content=[types.TextContent(type="text", text="Server not registered")], isError=True)
-            )
         # Tool, argument and rate checks happen in the broker (app/policy.py).
 
         progress_token = ctx.meta.progressToken if ctx.meta else None
@@ -73,10 +73,12 @@ def build_mcp_server(store: Store, broker: CallBroker) -> Server:
     return mcp
 
 
+_NO_HASH = "0" * 64  # compared against when the repo is unknown, so both paths do the same work
+
+
 def _token_ok(token: str, expected_hash: str | None) -> bool:
-    if not expected_hash:
-        return False
-    return hmac.compare_digest(hashlib.sha256(token.encode()).hexdigest(), expected_hash)
+    ok = hmac.compare_digest(hashlib.sha256(token.encode()).hexdigest(), expected_hash or _NO_HASH)
+    return ok and bool(expected_hash) and bool(token)
 
 
 class TenantMCPApp:
@@ -113,8 +115,12 @@ class TenantMCPApp:
         headers = {k.decode().lower(): v.decode() for k, v in scope["headers"]}
         auth = headers.get("authorization", "")
         token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-        server = self.store.get_server_by_name(full_name)
-        if server is None or not token or not _token_ok(token, server.token_hash):
+        # Same work for unknown repos and wrong tokens (one indexed lookup, one hash),
+        # so response timing doesn't reveal which repos are registered.
+        found = self.store.find_token_hash(full_name)
+        authorized = _token_ok(token, found[1] if found else None)
+        server = self.store.get_server(found[0]) if authorized else None
+        if server is None:
             client = scope.get("client") or (None,)
             audit("client.auth_failed", repo=full_name, ip=client[0], had_token=bool(token))
             # Same response for unknown repos and bad tokens.
