@@ -1,0 +1,27 @@
+# Staging gateway behind Caddy (automatic HTTPS). Installed and started by setup-vm.sh.
+services:
+  gateway:
+    build: ./gateway
+    restart: unless-stopped
+    env_file: gateway.env
+    volumes:
+      - gateway-data:/data
+      - ./app-key.pem:/run/secrets/app-key.pem:ro
+    # No published port: only Caddy reaches the gateway, on the compose network.
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [gateway]
+    ports:
+      - "80:80"    # certificate challenge, and redirect to https
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+
+volumes:
+  gateway-data:
+  caddy-data:

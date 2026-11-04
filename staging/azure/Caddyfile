@@ -1,0 +1,5 @@
+# Caddy gets and renews a Let's Encrypt certificate for $DOMAIN by itself, and
+# streams MCP responses (text/event-stream) through without buffering.
+{$DOMAIN} {
+	reverse_proxy gateway:8000
+}

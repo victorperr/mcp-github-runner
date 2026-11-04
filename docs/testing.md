@@ -61,6 +61,8 @@ This is the most important missing level: it's the only one that checks GitHub's
 
 ### Setup (once)
 
+A ready-made version of this setup, on a single Azure VM (gateway + Caddy + runner), with every command: [staging/azure/README.md](../staging/azure/README.md).
+
 1. **GitHub App**: create one with repository permissions **Actions: write**, **Environments: read**, **Metadata: read**, and no webhook. Note its App ID and download a private key.
 2. **Gateway**: deploy the image built from `gateway/Dockerfile` (CI's `image` job builds and smoke-tests it) at an HTTPS URL, with a persistent volume on `/data` writable by UID 10001, and:
 

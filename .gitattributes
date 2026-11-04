@@ -1,0 +1,6 @@
+# Everything here runs on Linux (runners, containers, the staging VM). Keep LF line
+# endings in every checkout, also on Windows with core.autocrlf=true: scripts,
+# Dockerfiles and Caddyfiles copied from a Windows checkout must not get CRLF.
+* text=auto eol=lf
+*.png binary
+*.pem binary
