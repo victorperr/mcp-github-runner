@@ -37,7 +37,12 @@ CREATE TABLE IF NOT EXISTS calls (
     finished_at       REAL
 );
 CREATE INDEX IF NOT EXISTS calls_by_repo ON calls(repository_id, status);
+CREATE INDEX IF NOT EXISTS calls_by_repo_time ON calls(repository_id, created_at);
 """
+
+# Finished calls are kept this long (the hourly rate limit needs at least one hour),
+# then deleted. The audit log keeps the long-term record.
+CALL_RETENTION_SECONDS = 24 * 3600
 
 
 @dataclass
@@ -228,6 +233,28 @@ class Store:
                 (repository_id, since),
             ).fetchone()
         return int(row[0])
+
+    def fail_unfinished_calls(self) -> int:
+        """At startup: nobody waits for calls from a previous process any more.
+
+        Without this, calls left pending/running by a crash count against
+        max_concurrent_calls forever and lock the repo out.
+        """
+        with self._lock:
+            cur = self._db.execute(
+                "UPDATE calls SET status = 'failed', finished_at = ?, arguments_json = NULL "
+                "WHERE status IN ('pending', 'running')",
+                (time.time(),),
+            )
+            return cur.rowcount
+
+    def purge_calls(self, before: float) -> int:
+        """Delete finished calls created before ``before``."""
+        with self._lock:
+            cur = self._db.execute(
+                "DELETE FROM calls WHERE created_at < ? AND status NOT IN ('pending', 'running')", (before,)
+            )
+            return cur.rowcount
 
     def count_active_calls(self, repository_id: str) -> int:
         with self._lock:

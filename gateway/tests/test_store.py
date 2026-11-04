@@ -47,6 +47,41 @@ def test_find_token_hash_and_rename(tmp_path):
     assert store.get_server_by_name("me/renamed").repository_id == "1"
 
 
+def test_restart_fails_unfinished_calls(tmp_path):
+    # A crash used to leave calls pending forever, so the repo hit max_concurrent_calls for good.
+    path = str(tmp_path / "s.db")
+    store = Store(path)
+    for i in range(3):
+        store.create_call(f"call-{i}-000000000000000", "1", "add", {"a": i})
+    store.claim_call("call-0-000000000000000", "9")
+    assert store.count_active_calls("1") == 3
+
+    restarted = Store(path)
+    assert restarted.fail_unfinished_calls() == 3
+    assert restarted.count_active_calls("1") == 0
+    assert restarted.get_call("call-1-000000000000000").arguments is None
+
+
+def test_purge_keeps_active_and_recent_calls(tmp_path):
+    import time
+
+    store = Store(str(tmp_path / "s.db"))
+    store.create_call("old-done-00000000000000", "1", "add", {})
+    store.finish_call("old-done-00000000000000", "done", from_status=("pending",))
+    store.create_call("old-pending-00000000000", "1", "add", {})
+    assert store.purge_calls(time.time() + 1) == 1  # only the finished one
+    assert store.get_call("old-pending-00000000000") is not None
+    assert store.purge_calls(time.time() - 3600) == 0
+
+
+def test_hourly_count_uses_time_index(tmp_path):
+    store = Store(str(tmp_path / "s.db"))
+    plan = store._db.execute(
+        "EXPLAIN QUERY PLAN SELECT COUNT(*) FROM calls WHERE repository_id = ? AND created_at >= ?", ("1", 0)
+    ).fetchall()
+    assert any("calls_by_repo_time" in row[-1] for row in plan)
+
+
 def test_token_check():
     import hashlib
 

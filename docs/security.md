@@ -118,7 +118,7 @@ Every refusal comes back as an MCP tool error with a code in `_meta["mcp-github-
 
 ## Audit events
 
-`gateway/app/audit.py` writes JSON lines to the `mcp_github_runner.audit` logger: `manifest.registered`, `manifest.rejected`, `call.created`, `call.denied`, `call.dispatched`, `call.dispatch_failed`, `call.claimed`, `call.claim_rejected`, `call.completed`, `call.timeout`, `call.run_ended`, `runner.auth_failed`, `client.auth_failed`. They contain IDs, tool names, codes and reasons, never arguments, results or tokens. GitHub's own run logs and the Environment's approval history complete the trail.
+`gateway/app/audit.py` writes JSON lines to the `mcp_github_runner.audit` logger: `calls.recovered` (calls marked failed at startup after a restart), `manifest.registered`, `manifest.rejected`, `call.created`, `call.denied`, `call.dispatched`, `call.dispatch_failed`, `call.claimed`, `call.claim_rejected`, `call.completed`, `call.timeout`, `call.run_ended`, `runner.auth_failed`, `client.auth_failed`. They contain IDs, tool names, codes and reasons, never arguments, results or tokens. GitHub's own run logs and the Environment's approval history complete the trail.
 
 ---
 
