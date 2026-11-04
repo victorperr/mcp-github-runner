@@ -4,8 +4,8 @@ This is the test plan for taking MCP GitHub Runner from a tested prototype to so
 
 | Level | What it proves | How it runs | Status (2026-11-03) |
 |---|---|---|---|
-| L0 Static | Code and workflows follow safe patterns; no vulnerable dependencies | CI `lint` and `audit` jobs | ✅ passes locally |
-| L1 Unit | Each module's logic, including the policy rules | CI `test` job | ✅ 121 tests, coverage 88% runner / 93% gateway |
+| L0 Static | Code and workflows follow safe patterns; no vulnerable dependencies; the gateway image builds and starts | CI `lint`, `audit` and `image` jobs | ✅ lint and audit pass locally; `image` runs in CI only |
+| L1 Unit | Each module's logic, including the policy rules | CI `test` job | ✅ 166 tests (2026-11-04), coverage gates (85% runner / 90% gateway) met |
 | L2 Local end to end | Real gateway, runner and MCP client, no GitHub | CI `test` job (`gateway/tests/test_e2e.py`) | ✅ passes |
 | L3 Staging on real GitHub | Approvals, OIDC claims, run binding and runners on real infrastructure | `staging.yml` (manual) + manual cases | ❌ **not run yet** |
 | L4 Security | Someone actively trying to break it | Fuzzing + manual pentest | ❌ not run |
@@ -61,15 +61,31 @@ This is the most important missing level: it's the only one that checks GitHub's
 
 ### Setup (once)
 
-1. **Gateway**: deploy `gateway/Dockerfile` to a staging URL with HTTPS, a GitHub App (Actions: write, Environments: read, Metadata: read), and `GATEWAY_STATUS_POLL=15`.
-2. **Staging repo** (private), e.g. `victorperr/mcp-runner-staging`:
-   - copy `staging/server.py`, `staging/mcp-runner.toml`, and `staging/workflow-mcp.yml` → `.github/workflows/mcp.yml`;
+1. **GitHub App**: create one with repository permissions **Actions: write**, **Environments: read**, **Metadata: read**, and no webhook. Note its App ID and download a private key.
+2. **Gateway**: deploy the image built from `gateway/Dockerfile` (CI's `image` job builds and smoke-tests it) at an HTTPS URL, with a persistent volume on `/data` writable by UID 10001, and:
+
+   | Env var | Value |
+   |---|---|
+   | `GATEWAY_PUBLIC_URL` | the HTTPS URL, e.g. `https://mcp-gw-staging.example.com` |
+   | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` | from step 1 |
+   | `GATEWAY_ALLOWED_OWNERS` | your user or org, so nobody else can register on staging |
+   | `GATEWAY_STATUS_POLL` | `15` |
+   | `FORWARDED_ALLOW_IPS` | your load balancer's address, so audit logs get real client IPs |
+
+   Leave `GATEWAY_OIDC_AUDIENCE` unset (it defaults to `GATEWAY_PUBLIC_URL`, which the action also uses) and never set `GATEWAY_DEV_MODE`. Send the `mcp_github_runner.audit` logger somewhere you can search: several manual cases read it.
+3. **Staging repo** (private), e.g. `victorperr/mcp-runner-staging`:
+   - copy `staging/server.py`, `staging/mcp-runner.toml`, and `staging/workflow-mcp.yml` → `.github/workflows/mcp.yml`. Until the version under test is merged, change the action's `@main` to its branch;
    - run `uv init --bare && uv add "fastmcp>=2.12,<3" && uv lock`;
-   - secrets `MCP_CLIENT_TOKEN` (32+ chars) and `STAGING_SECRET` (any 8+ char value); variables `MCP_GATEWAY_URL`, `MCP_RUNS_ON`;
-   - environment `mcp-approval` with **you** as required reviewer;
-   - install the GitHub App; register one ephemeral self-hosted runner.
-3. **This repo**: environment `staging` with secrets `STAGING_CLIENT_TOKEN`, `STAGING_REVIEWER_TOKEN` (a fine-grained token of the reviewer with Actions read/write and Deployments read/write on the staging repo) and variables `STAGING_MCP_URL`, `STAGING_REPO`.
-4. Push the staging repo once and check that the manifest job is green.
+   - secrets `MCP_CLIENT_TOKEN` (32+ chars) and `STAGING_SECRET` (any 8+ char value);
+   - variables `MCP_GATEWAY_URL` (exactly `GATEWAY_PUBLIC_URL`) and `MCP_RUNS_ON`;
+   - environment `mcp-approval`: **you** as required reviewer, *Allow administrators to bypass* **off**, deployment branches limited to `main`;
+   - **install the GitHub App before the first push**: registration is refused until it is installed;
+   - register one ephemeral **Linux** self-hosted runner (S14/S15 need Linux) and check `cat /proc/sys/kernel/yama/ptrace_scope` prints 1 or more.
+4. **This repo**: environment `staging` with secrets `STAGING_CLIENT_TOKEN`, `STAGING_REVIEWER_TOKEN` (a fine-grained token of the reviewer with Actions read/write and Deployments read/write on the staging repo) and variables `STAGING_MCP_URL`, `STAGING_REPO`.
+5. Push the staging repo once, then run the preflight check. It reads the setup through the GitHub API (your `gh` login or `GITHUB_TOKEN`) and must show `0 failed`:
+   ```
+   STAGING_REPO=<owner>/<repo> STAGING_MCP_URL=https://<gateway>/s/<owner>/<repo>/mcp python staging/preflight.py
+   ```
 
 ### Automated cases: `staging/test_staging.py`
 
@@ -77,7 +93,7 @@ Run with **Actions → Staging tests → Run workflow**, or locally with `python
 
 | ID | Case | Expected |
 |---|---|---|
-| S01 | `tools/list` | Exactly the 7 staging tools |
+| S01 | `tools/list` | Exactly the 8 staging tools |
 | S02 | `add(20, 22)` | `42` |
 | S03 | 10 sequential calls | p95 ≤ 90 s (record p50/p95 in the release notes) |
 | S04 | Gated tool, reviewer **approves** through the API when the "waiting for approval" link appears | Tool runs, result returned |
@@ -90,6 +106,8 @@ Run with **Actions → Staging tests → Run workflow**, or locally with `python
 | S11 | Wrong bearer token | HTTP `401` |
 | S12 | Unknown tool | `-32001` |
 | S13 | 5 slow calls at once, limit 3 | At least one `-32005`, the others succeed |
+| S14 | Tool reads `/proc/<pid>/environ` of itself and every parent up to init (Linux) | No `ACTIONS_ID_TOKEN_REQUEST_*`, `ACTIONS_RUNTIME_TOKEN` or `MCP_CLIENT_TOKEN` anywhere |
+| S15 | Tool opens its parent's (the supervisor's) `/proc/<pid>/mem` (Linux) | Permission denied |
 
 ### Manual cases (scripted steps, before every release)
 
@@ -107,6 +125,30 @@ Run with **Actions → Staging tests → Run workflow**, or locally with `python
 | M10 Runner offline | Stop the runner, call `add` | "Queued… Is a runner with the right labels online?" after 60 s, then `-32008` at the timeout |
 | M11 App uninstalled | Uninstall the GitHub App, call `add` | `-32007` with "app is not installed" |
 | M12 Approval after timeout | Set `approval_timeout_seconds = 60`, call `gated_action`, approve after 90 s | Client got `-32008`; the approved run fails with `409`; tool does not run |
+| M13 Re-register from a call run | Add the temporary step below to the staging workflow, push, call `add` | The step prints `403`; `add` still works with the old client token. Remove the step |
+| M14 Manual manifest upload | Actions → MCP server → Run workflow with `call_id` empty | Manifest job green (GitHub confirms it's an `MCP manifest` run); audit `manifest.registered` |
+| M15 Another workflow | Copy `mcp.yml` to `.github/workflows/other.yml` (keep the push trigger), push | `other.yml`'s job fails with `409 … registered from .github/workflows/mcp.yml`. Delete the file |
+| M16 Admin bypass | Turn on *Allow administrators to bypass* on `mcp-approval`, wait 60 s, call `gated_action` | `-32006` mentioning the bypass, no run started. Turn it off again |
+| M17 Gateway restart mid-call | Call `sleep(120)`, restart the gateway after 20 s, then make 4 quick `add` calls | First call errors (no hang); audit `calls.recovered`; the `add` calls aren't refused with `-32005` |
+| M18 Owner allowlist | Set `GATEWAY_ALLOWED_OWNERS` to another owner, restart, push the staging repo | Manifest job fails with `403 … does not accept servers from this owner`. Restore |
+| M19 App not installed | Create a second private repo from the staging files **without** installing the App, push | Manifest job fails with `403 Install the MCP GitHub Runner app …` |
+
+M13 step (temporary, after the action step in the staging repo's `mcp.yml`). It does from a tool-call job what an attacker with that job's OIDC token would try: replace the client token. The gateway must refuse it, because GitHub reports the run as `MCP call …`, not `MCP manifest`:
+
+```yaml
+      - name: "M13 (temporary): try to re-register from a tool-call run"
+        if: inputs.call_id != ''
+        env:
+          GW: ${{ vars.MCP_GATEWAY_URL }}
+        run: |
+          aud=$(jq -rn --arg a "$GW" '$a | @uri')   # the audience is the gateway URL, URL-encoded
+          token=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$aud" | jq -r .value)
+          zeros=$(printf '0%.0s' $(seq 64))
+          curl -sS -o /dev/null -w 'M13: %{http_code}\n' -X PUT "$GW/runner/manifest" \
+            -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+            -d "{\"tools\": [], \"client_token_sha256\": \"$zeros\"}"
+```
 
 ### Client compatibility matrix
 
@@ -128,7 +170,7 @@ Pass criteria: at least 3 clients complete all five steps.
 
 | Test | How | Pass criteria |
 |---|---|---|
-| API fuzzing of `/runner/*` | [schemathesis](https://schemathesis.readthedocs.io) against the gateway's OpenAPI with a valid dev OIDC token | No 5xx; no 2xx on requests that break the schema |
+| API fuzzing of `/runner/*` | [schemathesis](https://schemathesis.readthedocs.io) against a **dev-mode** gateway's OpenAPI (`/openapi.json` is only served in dev mode) with a valid dev OIDC token | No 5xx; no 2xx on requests that break the schema |
 | MCP endpoint fuzzing | Malformed JSON-RPC, huge bodies, wrong content types on `/s/{owner}/{repo}/mcp` | No 5xx, no crash; 413/400 as appropriate |
 | Token brute force | 10,000 wrong tokens from one IP | All 401 and audited (rate limiting by IP is a known gap: add it, or put it in front of a WAF) |
 | Container scan | `trivy image <gateway image>` | No critical or high CVEs that can't be explained |
