@@ -3,6 +3,7 @@ so tools can reach services on your private network."""
 
 import os
 import platform
+import re
 
 import httpx
 from fastmcp import FastMCP
@@ -32,17 +33,24 @@ def runner_info() -> dict:
     }
 
 
+# Paths the agent may read on the internal API. Keep this as narrow as you can:
+# the token below is sent with every request. Only letters, digits, "-" and "_"
+# are allowed in segments, so encoded tricks like %2e%2e, "?" or "#" can't get through.
+ALLOWED_PATH = re.compile(r"/(status|health)|/api/v1/(orders|customers)(/[A-Za-z0-9_-]+)?")
+
+
 @mcp.tool(annotations={"readOnlyHint": True})
 def internal_api_get(path: str) -> dict:
     """GET a path on the internal API (only reachable from inside the network).
 
+    Allowed: /status, /health, /api/v1/orders[/<id>], /api/v1/customers[/<id>].
     INTERNAL_API_URL and INTERNAL_API_TOKEN come from repo secrets, passed in mcp.yml.
     """
     base = os.environ.get("INTERNAL_API_URL")
     if not base:
         raise ValueError("INTERNAL_API_URL is not set; add it as a repo secret and pass it in mcp.yml")
-    if not path.startswith("/") or ".." in path:
-        raise ValueError("path must be an absolute path like /status")
+    if not ALLOWED_PATH.fullmatch(path):
+        raise ValueError("path is not allowed; use /status, /health, /api/v1/orders[/<id>] or /api/v1/customers[/<id>]")
     headers = {}
     if token := os.environ.get("INTERNAL_API_TOKEN"):
         headers["Authorization"] = f"Bearer {token}"

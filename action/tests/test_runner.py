@@ -95,8 +95,10 @@ async def test_internal_api_tool_calls_private_service(server, monkeypatch):
     result = await run_tool(server, "internal_api_get", {"path": "/status"})
     assert result["structuredContent"] == {"status": 200, "body": "ok"}
     assert route.calls.last.request.headers["Authorization"] == "Bearer t0k"
-    bad = await run_tool(server, "internal_api_get", {"path": "http://elsewhere/"})
-    assert bad["isError"] is True
+    for path in ("http://elsewhere/", "/%2e%2e/admin", "/api/v1/orders/../admin", "/status?x=1", "/admin"):
+        bad = await run_tool(server, "internal_api_get", {"path": path})
+        assert bad["isError"] is True, path
+    assert route.call_count == 1
 
 
 # -- CLI: call mode -------------------------------------------------------------

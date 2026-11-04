@@ -5,7 +5,8 @@ name: MCP server
 on:
   push:
     branches: [main]
-    paths: ["**.py", "pyproject.toml", "uv.lock", ".github/workflows/mcp.yml"]
+    # Anything that changes the tools, the policy or the dependencies re-uploads the tool list.
+    paths: ["**.py", "pyproject.toml", "uv.lock", "requirements.txt", "mcp-runner.toml", ".github/workflows/mcp.yml"]
   workflow_dispatch:
     inputs:
       call_id:

@@ -80,12 +80,15 @@ Secrets never pass through the gateway. Only the runner sees them, and GitHub ma
 From [template/server.py](../template/server.py):
 
 ```python
+# An allowlist, not a blocklist: a check like `".." in path` is bypassed by "%2e%2e".
+ALLOWED_PATH = re.compile(r"/(status|health)|/api/v1/(orders|customers)(/[A-Za-z0-9_-]+)?")
+
 @mcp.tool(annotations={"readOnlyHint": True})
 def internal_api_get(path: str) -> dict:
     """GET a path on the internal API (only reachable from inside the network)."""
     base = os.environ["INTERNAL_API_URL"]           # e.g. http://billing.internal:8080
-    if not path.startswith("/") or ".." in path:   # keep the agent on this host
-        raise ValueError("path must be an absolute path like /status")
+    if not ALLOWED_PATH.fullmatch(path):            # keep the agent on these endpoints
+        raise ValueError("path is not allowed")
     resp = httpx.get(base + path, headers={"Authorization": f"Bearer {os.environ['INTERNAL_API_TOKEN']}"})
     return {"status": resp.status_code, "body": resp.text[:10_000]}
 ```
