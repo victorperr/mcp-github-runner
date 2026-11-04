@@ -40,7 +40,7 @@ def make_settings(tmp_path: Path, **overrides) -> Settings:
     s.db_path = str(tmp_path / "gw.db")
     s.dev_mode = True
     s.dev_key_path = str(tmp_path / "dev-key.pem")
-    s.public_url = "http://gw.test"
+    s.public_url = "http://localhost:8000"  # dev mode only starts on a loopback URL
     s.call_timeout = 5
     s.heartbeat_interval = 0.2
     for k, v in overrides.items():

@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 RUN_TITLE = "MCP call {call_id}"  # must match run-name in the template workflow
 MANIFEST_RUN_TITLE = "MCP manifest"  # run-name of a dispatch run with no call_id
 ENV_CHECK_TTL = 60  # seconds a passing approval-environment check is trusted
+GATEWAY_ONLY_ENV = ("GITHUB_APP_", "GATEWAY_")  # env var prefixes LocalDispatcher doesn't pass on
 
 
 class DispatchError(Exception):
@@ -272,11 +273,9 @@ class LocalDispatcher:
             run_id=self._runs[call_id],
             environment=approval_env,
         )
-        env = {
-            **os.environ,
-            "MCP_RUNNER_OIDC_TOKEN": token,
-            "PYTHONPATH": self._action_dir,
-        }
+        # The runner (and the tool code it loads) must not inherit the gateway's own secrets.
+        env = {k: v for k, v in os.environ.items() if not k.startswith(GATEWAY_ONLY_ENV)}
+        env.update({"MCP_RUNNER_OIDC_TOKEN": token, "PYTHONPATH": self._action_dir})
         proc = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "mcp_runner", "call",
             "--call-id", call_id,

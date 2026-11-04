@@ -23,7 +23,7 @@ def test_register_manifest(client, sign, app):
     r = register(client, sign)
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["mcp_url"] == "http://gw.test/s/me/demo/mcp" and body["tools"] == 1 and body["warnings"] == []
+    assert body["mcp_url"] == "http://localhost:8000/s/me/demo/mcp" and body["tools"] == 1 and body["warnings"] == []
     server = app.state.store.get_server("1")
     assert server.workflow_path == ".github/workflows/mcp.yml"
     assert server.token_hash == TOKEN_HASH
@@ -110,11 +110,31 @@ def test_api_docs_are_off_outside_dev_mode(tmp_path, dispatcher):
 
     from .conftest import make_settings
 
-    app = create_app(make_settings(tmp_path, dev_mode=False), dispatcher=dispatcher)
+    app = create_app(make_settings(tmp_path, dev_mode=False, public_url="https://gw.example.com"), dispatcher=dispatcher)
     with TestClient(app) as c:
         for path in ("/docs", "/redoc", "/openapi.json"):
             assert c.get(path).status_code == 404
         assert c.get("/healthz").status_code == 200
+
+
+def test_dev_mode_refuses_public_url(tmp_path, dispatcher):
+    import pytest
+
+    from app.main import create_app
+
+    from .conftest import make_settings
+
+    with pytest.raises(ValueError, match="only for local testing"):
+        create_app(make_settings(tmp_path, public_url="https://gw.example.com"), dispatcher=dispatcher)
+
+
+def test_dev_key_is_owner_only(tmp_path):
+    import os
+    import stat
+
+    DevSigner(str(tmp_path / "k.pem"))
+    if os.name == "posix":
+        assert stat.S_IMODE((tmp_path / "k.pem").stat().st_mode) == 0o600
 
 
 def test_audience_defaults_to_public_url(monkeypatch):

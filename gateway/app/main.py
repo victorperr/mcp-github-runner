@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
@@ -17,6 +18,8 @@ from .runner_api import router as runner_router
 from .schema_check import SchemaChecker
 from .store import Store
 
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
 
 def create_app(settings: Settings | None = None, dispatcher: Dispatcher | None = None) -> FastAPI:
     settings = settings or Settings()
@@ -24,6 +27,13 @@ def create_app(settings: Settings | None = None, dispatcher: Dispatcher | None =
 
     signer: DevSigner | None = None
     if settings.dev_mode:
+        # Dev mode trusts a local signing key instead of GitHub: never on a reachable address.
+        host = urlsplit(settings.public_url).hostname
+        if host not in LOOPBACK_HOSTS:
+            raise ValueError(
+                f"GATEWAY_DEV_MODE=1 is only for local testing, but GATEWAY_PUBLIC_URL is {settings.public_url}. "
+                "Use a localhost URL, or turn dev mode off."
+            )
         signer = DevSigner(settings.dev_key_path)
         oidc = OIDCVerifier(settings.oidc_audience, issuer=DEV_ISSUER, public_key=signer.public_key)
     else:

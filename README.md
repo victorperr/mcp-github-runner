@@ -65,7 +65,7 @@ Or install everything at once with `pip install -r requirements-dev.txt`. CI ([.
 
 ### Run the full loop locally (no GitHub)
 
-Dev mode signs fake OIDC tokens with a local key, and the `local` dispatcher runs `mcp_runner call` as a subprocess instead of starting a workflow. It treats calls that need approval as already approved.
+Dev mode signs fake OIDC tokens with a local key, and the `local` dispatcher runs `mcp_runner call` as a subprocess instead of starting a workflow. It treats calls that need approval as already approved. The gateway refuses to start in dev mode unless `GATEWAY_PUBLIC_URL` is a localhost address.
 
 ```powershell
 cd gateway
@@ -73,8 +73,8 @@ $env:GATEWAY_DEV_MODE="1"; $env:GATEWAY_DISPATCHER="local"; $env:GATEWAY_LOCAL_S
 ..\.venv\Scripts\python -m uvicorn --factory app.main:create_app --port 8000
 
 # second terminal, same env vars:
-..\.venv\Scripts\python -m app.dev register --dir ..\template --repo me/demo --client-token devtoken
-npx @modelcontextprotocol/inspector   # connect to http://localhost:8000/s/me/demo/mcp, header Authorization: Bearer devtoken
+..\.venv\Scripts\python -m app.dev register --dir ..\template --repo me/demo   # client token: dev-token-0123456789abcdefghijklm
+npx @modelcontextprotocol/inspector   # connect to http://localhost:8000/s/me/demo/mcp, header Authorization: Bearer dev-token-0123456789abcdefghijklm
 ```
 
 ### Deploy the gateway
