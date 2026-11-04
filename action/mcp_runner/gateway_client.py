@@ -7,11 +7,33 @@ from typing import Any
 
 import httpx
 
-DEFAULT_AUDIENCE = "mcp-github-runner"
-
-
 class GatewayError(Exception):
     pass
+
+
+LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def check_gateway_url(url: str) -> None:
+    """Allow https://, and plain http:// only when the host is exactly a loopback name.
+
+    Compares the parsed host, so http://localhost.evil.com or http://localhost@evil.com
+    don't count as local.
+    """
+    try:
+        parsed = httpx.URL(url)
+    except (httpx.InvalidURL, TypeError) as exc:
+        raise GatewayError(f"Invalid gateway URL: {exc}") from exc
+    if parsed.scheme == "https" and parsed.host:
+        return
+    if parsed.scheme == "http" and parsed.host in LOOPBACK_HOSTS and not parsed.userinfo:
+        return
+    raise GatewayError("The gateway URL must use https:// (plain http is only allowed for localhost)")
+
+
+def default_audience(gateway_url: str) -> str:
+    """The OIDC audience a gateway expects by default: its own URL, without trailing slash."""
+    return gateway_url.rstrip("/")
 
 
 class GatewayClient:
@@ -24,8 +46,7 @@ class GatewayClient:
         *,
         transport: httpx.BaseTransport | None = None,
     ):
-        if not base_url.startswith("https://") and not base_url.startswith(("http://localhost", "http://127.0.0.1")):
-            raise GatewayError("The gateway URL must use https:// (plain http is only allowed for localhost)")
+        check_gateway_url(base_url)
         self._token = token if callable(token) else (lambda: token)
         self._http = httpx.Client(base_url=base_url.rstrip("/"), timeout=60, transport=transport)
 

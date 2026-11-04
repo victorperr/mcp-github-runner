@@ -9,8 +9,6 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-from fastmcp import Client
-
 from .policy import check_tool_names, parse_policy
 
 APPROVAL_TAG = "requires-approval"
@@ -30,6 +28,9 @@ async def build_manifest(
     approval_environment: str = DEFAULT_APPROVAL_ENVIRONMENT,
     policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    # Imported here so the supervisor (which only needs hash_client_token) never loads fastmcp.
+    from fastmcp import Client
+
     policy = policy or parse_policy({})
     async with Client(server) as client:
         tools = await client.list_tools()

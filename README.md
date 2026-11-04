@@ -65,7 +65,7 @@ Or install everything at once with `pip install -r requirements-dev.txt`. CI ([.
 
 ### Run the full loop locally (no GitHub)
 
-Dev mode signs fake OIDC tokens with a local key, and the `local` dispatcher runs `mcp_runner call` as a subprocess instead of starting a workflow. It treats calls that need approval as already approved.
+Dev mode signs fake OIDC tokens with a local key, and the `local` dispatcher runs `mcp_runner call` as a subprocess instead of starting a workflow. It treats calls that need approval as already approved. The gateway refuses to start in dev mode unless `GATEWAY_PUBLIC_URL` is a localhost address.
 
 ```powershell
 cd gateway
@@ -73,16 +73,16 @@ $env:GATEWAY_DEV_MODE="1"; $env:GATEWAY_DISPATCHER="local"; $env:GATEWAY_LOCAL_S
 ..\.venv\Scripts\python -m uvicorn --factory app.main:create_app --port 8000
 
 # second terminal, same env vars:
-..\.venv\Scripts\python -m app.dev register --dir ..\template --repo me/demo --client-token devtoken
-npx @modelcontextprotocol/inspector   # connect to http://localhost:8000/s/me/demo/mcp, header Authorization: Bearer devtoken
+..\.venv\Scripts\python -m app.dev register --dir ..\template --repo me/demo   # client token: dev-token-0123456789abcdefghijklm
+npx @modelcontextprotocol/inspector   # connect to http://localhost:8000/s/me/demo/mcp, header Authorization: Bearer dev-token-0123456789abcdefghijklm
 ```
 
 ### Deploy the gateway
 
 1. Create a GitHub App with repository permissions **Actions: write**, **Environments: read** and **Metadata: read**. No webhook is needed.
-2. Deploy `gateway/Dockerfile` (Fly.io, Cloud Run, Render…) with a persistent volume on `/data` and these env vars:
+2. Deploy `gateway/Dockerfile` (Fly.io, Cloud Run, Render…) with a persistent volume on `/data` and these env vars. The container runs as UID 10001: a new Docker volume gets the right owner automatically, but a host directory must be made writable by that UID (`chown 10001 <dir>`). Env vars:
    `GATEWAY_PUBLIC_URL`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` (or `GITHUB_APP_PRIVATE_KEY_PATH`).
-   Optional caps (repos can lower them in `mcp-runner.toml`, never raise them): `GATEWAY_CALL_TIMEOUT` (300), `GATEWAY_APPROVAL_TIMEOUT` (900), `GATEWAY_MAX_PENDING_CALLS` (5 per repo), `GATEWAY_MAX_CALLS_PER_HOUR` (1000), `GATEWAY_MAX_ARGUMENT_BYTES` (256 KB), `GATEWAY_MAX_RESULT_BYTES` (4 MB). Also `GATEWAY_STATUS_POLL` (15), `GATEWAY_OIDC_AUDIENCE`.
+   Optional caps (repos can lower them in `mcp-runner.toml`, never raise them): `GATEWAY_CALL_TIMEOUT` (300), `GATEWAY_APPROVAL_TIMEOUT` (900), `GATEWAY_MAX_PENDING_CALLS` (5 per repo), `GATEWAY_MAX_CALLS_PER_HOUR` (1000), `GATEWAY_MAX_ARGUMENT_BYTES` (256 KB), `GATEWAY_MAX_RESULT_BYTES` (4 MB). Also `GATEWAY_STATUS_POLL` (15), `GATEWAY_OIDC_AUDIENCE` (defaults to `GATEWAY_PUBLIC_URL`; the action uses the gateway URL too, so each deployment has its own audience), `GATEWAY_ALLOWED_OWNERS` (comma-separated users/orgs allowed to register; empty means any repo that installed the App), and `GATEWAY_ARGUMENT_CHECK_TIMEOUT` (2 s) / `GATEWAY_ARGUMENT_CHECK_WORKERS` (2) for the isolated argument checks.
    Send the `mcp_github_runner.audit` logger to your log pipeline.
 3. Tag a release (`git tag v1.0.0 && git tag -f v1 && git push --tags`). Repos then use `victorperr/mcp-github-runner/action@v1`, or better, its commit SHA. Each repo sets the repo variable `MCP_GATEWAY_URL` to the gateway's `https://` address. The action has no default address on purpose.
 

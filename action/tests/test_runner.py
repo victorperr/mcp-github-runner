@@ -1,5 +1,8 @@
 import base64
+import io
 import json
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -92,8 +95,10 @@ async def test_internal_api_tool_calls_private_service(server, monkeypatch):
     result = await run_tool(server, "internal_api_get", {"path": "/status"})
     assert result["structuredContent"] == {"status": 200, "body": "ok"}
     assert route.calls.last.request.headers["Authorization"] == "Bearer t0k"
-    bad = await run_tool(server, "internal_api_get", {"path": "http://elsewhere/"})
-    assert bad["isError"] is True
+    for path in ("http://elsewhere/", "/%2e%2e/admin", "/api/v1/orders/../admin", "/status?x=1", "/admin"):
+        bad = await run_tool(server, "internal_api_get", {"path": path})
+        assert bad["isError"] is True, path
+    assert route.call_count == 1
 
 
 # -- CLI: call mode -------------------------------------------------------------
@@ -164,6 +169,78 @@ def test_runner_scrubs_credentials_before_user_code(monkeypatch, tmp_path):
         assert name not in env
 
 
+def test_tool_code_runs_in_a_separate_process(monkeypatch, tmp_path):
+    # The supervisor holds the OIDC credentials; tool code must not share its memory.
+    (tmp_path / "server.py").write_text(
+        "import os\nfrom fastmcp import FastMCP\nmcp = FastMCP('t')\n"
+        "@mcp.tool\ndef pid() -> int:\n    return os.getpid()\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MCP_RUNNER_OIDC_TOKEN", fake_jwt())
+    with respx.mock:
+        respx.get(f"{GW}/runner/calls/{CALL_ID}").respond(json={"tool": "pid", "arguments": {}})
+        posted = respx.post(f"{GW}/runner/calls/{CALL_ID}/result").respond(json={"ok": True})
+        assert main(["call", "--gateway", GW, "--call-id", CALL_ID]) == 0
+    result = json.loads(posted.calls.last.request.content)["result"]
+    assert result["structuredContent"]["result"] != os.getpid()
+
+
+def test_credentials_from_stdin_never_reach_tool_code(monkeypatch, tmp_path):
+    # action.yml mode: credentials arrive on stdin, not in the environment.
+    (tmp_path / "server.py").write_text(
+        "import os\nfrom fastmcp import FastMCP\nmcp = FastMCP('t')\n"
+        "@mcp.tool\ndef env() -> str:\n    return repr(dict(os.environ))\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MCP_RUNNER_CREDENTIALS", "stdin")
+    monkeypatch.setattr(sys, "stdin", io.StringIO("https://oidc.test/token?api-version=2.0\nreq-secret-123\n\n"))
+    with respx.mock:
+        oidc = respx.get("https://oidc.test/token").respond(json={"value": fake_jwt()})
+        respx.get(f"{GW}/runner/calls/{CALL_ID}").respond(json={"tool": "env", "arguments": {}})
+        posted = respx.post(f"{GW}/runner/calls/{CALL_ID}/result").respond(json={"ok": True})
+        assert main(["call", "--gateway", GW, "--call-id", CALL_ID]) == 0
+    assert oidc.calls.last.request.headers["Authorization"] == "bearer req-secret-123"
+    assert oidc.calls.last.request.url.params["audience"] == GW  # one audience per gateway
+    text = json.loads(posted.calls.last.request.content)["result"]["content"][0]["text"]
+    assert "req-secret-123" not in text and "oidc.test" not in text
+    assert "MCP_RUNNER_CREDENTIALS" not in text
+
+
+def test_read_credentials_pads_missing_lines():
+    from mcp_runner.security import Credentials, read_credentials
+
+    assert read_credentials(io.StringIO("u\nt")) == Credentials("u", "t", "")
+    assert read_credentials(io.StringIO("u\nt\nclient\n")) == Credentials("u", "t", "client")
+
+
+def test_tool_process_load_error_is_reported(monkeypatch, tmp_path):
+    (tmp_path / "server.py").write_text("x = 1\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MCP_RUNNER_OIDC_TOKEN", fake_jwt())
+    with respx.mock:
+        respx.get(f"{GW}/runner/calls/{CALL_ID}").respond(json={"tool": "add", "arguments": {}})
+        posted = respx.post(f"{GW}/runner/calls/{CALL_ID}/result").respond(json={"ok": True})
+        assert main(["call", "--gateway", GW, "--call-id", CALL_ID]) == 0
+    result = json.loads(posted.calls.last.request.content)["result"]
+    assert result["isError"] and "No FastMCP instance" in result["content"][0]["text"]
+
+
+def test_tool_process_crash_is_reported(monkeypatch, tmp_path):
+    (tmp_path / "server.py").write_text("import os\nos._exit(3)\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MCP_RUNNER_OIDC_TOKEN", fake_jwt())
+    with respx.mock:
+        respx.get(f"{GW}/runner/calls/{CALL_ID}").respond(json={"tool": "add", "arguments": {}})
+        posted = respx.post(f"{GW}/runner/calls/{CALL_ID}/result").respond(json={"ok": True})
+        assert main(["call", "--gateway", GW, "--call-id", CALL_ID]) == 0
+    result = json.loads(posted.calls.last.request.content)["result"]
+    assert result["isError"] and "exited with code 3" in result["content"][0]["text"]
+
+
+def test_worker_usage_error():
+    assert main(["worker", "bogus"]) == 2
+
+
 def test_runner_redacts_secrets_in_results(monkeypatch, tmp_path):
     (tmp_path / "server.py").write_text(
         "import os\nfrom fastmcp import FastMCP\nmcp = FastMCP('t')\n"
@@ -206,6 +283,23 @@ def test_cli_rejects_plain_http_gateway(monkeypatch):
     monkeypatch.chdir(TEMPLATE)
     monkeypatch.setenv("MCP_RUNNER_OIDC_TOKEN", fake_jwt())
     assert main(["call", "--gateway", "http://evil.example", "--call-id", CALL_ID]) == 1
+
+
+@pytest.mark.parametrize("url", [
+    "http://localhost.evil.com", "http://127.0.0.1.nip.io", "http://localhost@evil.com", "ftp://gw.test", "nonsense",
+])
+def test_gateway_url_lookalikes_are_refused(url):
+    from mcp_runner.gateway_client import GatewayError, check_gateway_url
+
+    with pytest.raises(GatewayError):
+        check_gateway_url(url)
+
+
+@pytest.mark.parametrize("url", ["https://gw.test", "http://localhost:8000", "http://127.0.0.1:9", "http://[::1]:8000"])
+def test_gateway_url_allowed(url):
+    from mcp_runner.gateway_client import check_gateway_url
+
+    check_gateway_url(url)
 
 
 @respx.mock

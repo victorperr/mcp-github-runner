@@ -25,9 +25,9 @@ inputs:
     description: "Gateway base URL (https://...). No default on purpose: results must only go to a gateway you run."
     required: true
   audience:
-    description: "OIDC audience the gateway expects."
+    description: "OIDC audience the gateway expects. Empty (default) means the gateway URL, which is also the gateway's default."
     required: false
-    default: "mcp-github-runner"
+    default: ""
   approval-environment:
     description: "GitHub Environment (with required reviewers) that tools tagged 'requires-approval' must run in."
     required: false
@@ -51,7 +51,9 @@ runs:
     # Third-party actions are pinned to a full commit SHA (tag in the comment), like gh-aw's action pinning.
     - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
       with:
-        enable-cache: true
+        # auto = GitHub cache on GitHub-hosted runners only. Self-hosted runners keep uv's
+        # cache on disk, so restoring/saving it through GitHub on every call only adds time.
+        enable-cache: auto
         python-version: ${{ inputs.python-version }}
         working-directory: ${{ inputs.working-directory }}
 
@@ -90,13 +92,35 @@ runs:
           echo "::error::gateway-url is empty. Set the repo variable MCP_GATEWAY_URL to your gateway's address (Settings > Secrets and variables > Actions > Variables)."
           exit 1
         fi
+        if [ "$MCP_MODE" != "call" ] && [ "$MCP_MODE" != "manifest" ]; then
+          echo "::error::mode must be 'manifest' or 'call'"; exit 1
+        fi
+        if [ "$MCP_MODE" = "call" ] && [ -z "$MCP_CALL_ID" ]; then
+          echo "::error::call-id is required in call mode"; exit 1
+        fi
+
+        # Credentials go to mcp_runner on stdin and are removed from the environment
+        # before exec. Neither this shell (replaced by exec) nor any process that runs
+        # tool code then has them in its environment (/proc/<pid>/environ).
+        # mcp_runner keeps them in its own memory and runs tool code in a child process.
+        creds="$(printf '%s\n%s\n%s' "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" \
+          "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" "${MCP_CLIENT_TOKEN:-}")"
+        unset ACTIONS_ID_TOKEN_REQUEST_URL ACTIONS_ID_TOKEN_REQUEST_TOKEN MCP_CLIENT_TOKEN \
+          ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL ACTIONS_RESULTS_URL ACTIONS_CACHE_URL
+        export MCP_RUNNER_CREDENTIALS=stdin
+
+        # Run the project's Python directly (exec, no `uv run` parent holding stdin open).
+        py="$(uv run --no-sync python -c 'import pathlib, sys; print(pathlib.Path(sys.executable).as_posix())')"
+        bin="$(dirname "$py")"
+        if [ -x "$bin/python" ]; then
+          # Same environment `uv run` would give tool code (POSIX venv layout).
+          export VIRTUAL_ENV="${bin%/*}" PATH="$bin:$PATH"
+        fi
+
         # python -P: don't put the repo folder first on sys.path, so repo files can't
         # shadow mcp_runner itself. The server's folder is added only when it is loaded.
         if [ "$MCP_MODE" = "call" ]; then
-          if [ -z "$MCP_CALL_ID" ]; then echo "::error::call-id is required in call mode"; exit 1; fi
-          uv run --no-sync python -P -m mcp_runner call --call-id "$MCP_CALL_ID"
-        elif [ "$MCP_MODE" = "manifest" ]; then
-          uv run --no-sync python -P -m mcp_runner manifest
+          exec "$py" -P -m mcp_runner call --call-id "$MCP_CALL_ID" <<<"$creds"
         else
-          echo "::error::mode must be 'manifest' or 'call'"; exit 1
+          exec "$py" -P -m mcp_runner manifest <<<"$creds"
         fi

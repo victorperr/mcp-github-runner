@@ -6,11 +6,15 @@ flow can be tested without GitHub.
 
 from __future__ import annotations
 
+import logging
+import os
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import httpx
 import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -18,6 +22,8 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 GITHUB_ISSUER = "https://token.actions.githubusercontent.com"
 GITHUB_JWKS_URL = f"{GITHUB_ISSUER}/.well-known/jwks"
 DEV_ISSUER = "mcp-github-runner-dev"
+
+logger = logging.getLogger(__name__)
 
 
 class OIDCError(Exception):
@@ -57,16 +63,70 @@ class RunnerIdentity:
             raise OIDCError(f"OIDC token is missing claim {exc}") from exc
 
 
+class JWKSCache:
+    """GitHub's signing keys, refreshed at most once per ``min_refresh`` seconds.
+
+    PyJWKClient downloads the key set again for every unknown ``kid``, so anyone
+    could make the gateway call GitHub (and tie up a worker thread) once per
+    garbage token. Here an unknown ``kid`` triggers a refresh only if the last
+    one is older than ``min_refresh``; otherwise the token is rejected.
+    """
+
+    def __init__(self, url: str, *, min_refresh: float = 60, max_age: float = 3600, timeout: float = 10):
+        self.url = url
+        self.min_refresh = min_refresh
+        self.max_age = max_age
+        self.timeout = timeout
+        self._keys: dict[str, Any] = {}
+        self._fetched_at = float("-inf")
+        self._lock = threading.Lock()
+
+    def key_for(self, kid: str | None) -> Any:
+        if not kid:
+            raise OIDCError("Invalid OIDC token: no key ID")
+        key = self._keys.get(kid)
+        if key is not None and time.monotonic() - self._fetched_at < self.max_age:
+            return key
+        with self._lock:  # one refresh at a time; others reuse its result
+            now = time.monotonic()
+            key = self._keys.get(kid)
+            stale = now - self._fetched_at >= self.max_age
+            if (key is None or stale) and now - self._fetched_at >= self.min_refresh:
+                self._refresh()
+                key = self._keys.get(kid)
+        if key is None:
+            raise OIDCError("Invalid OIDC token: unknown signing key")
+        return key
+
+    def _refresh(self) -> None:
+        # Set first, so failed fetches are rate limited too.
+        self._fetched_at = time.monotonic()
+        try:
+            resp = httpx.get(self.url, timeout=self.timeout)
+            resp.raise_for_status()
+            jwk_set = jwt.PyJWKSet.from_dict(resp.json())
+        except (httpx.HTTPError, ValueError, jwt.PyJWTError) as exc:
+            # Keep the keys we have; tokens signed with them still verify.
+            logger.warning("could not refresh GitHub OIDC keys: %s", exc)
+            return
+        self._keys = {k.key_id: k.key for k in jwk_set.keys if k.key_id}
+
+
 class OIDCVerifier:
-    def __init__(self, audience: str, *, issuer: str = GITHUB_ISSUER, public_key: Any = None):
+    def __init__(
+        self, audience: str, *, issuer: str = GITHUB_ISSUER, public_key: Any = None, jwks: JWKSCache | None = None
+    ):
         self.audience = audience
         self.issuer = issuer
         self._public_key = public_key
-        self._jwks = None if public_key is not None else jwt.PyJWKClient(GITHUB_JWKS_URL, cache_keys=True)
+        self._jwks = None if public_key is not None else (jwks or JWKSCache(GITHUB_JWKS_URL))
 
     def verify(self, token: str) -> RunnerIdentity:
         try:
-            key = self._public_key or self._jwks.get_signing_key_from_jwt(token).key
+            if self._public_key is not None:
+                key = self._public_key
+            else:
+                key = self._jwks.key_for(jwt.get_unverified_header(token).get("kid"))
             claims = jwt.decode(
                 token,
                 key,
@@ -90,13 +150,15 @@ class DevSigner:
         else:
             self._key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
             if path:
-                path.write_bytes(
-                    self._key.private_bytes(
-                        serialization.Encoding.PEM,
-                        serialization.PrivateFormat.PKCS8,
-                        serialization.NoEncryption(),
-                    )
+                pem = self._key.private_bytes(
+                    serialization.Encoding.PEM,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
                 )
+                # Anyone holding this key can forge runner tokens for a dev gateway: owner-only.
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "wb") as f:
+                    f.write(pem)
 
     @property
     def public_key(self) -> Any:

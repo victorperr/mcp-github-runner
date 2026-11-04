@@ -75,7 +75,8 @@ def reviewing_progress_handler(state: str, seen: dict):
 async def test_s01_lists_published_tools():
     async with Client(URL, auth=TOKEN) as client:
         names = {t.name for t in await client.list_tools()}
-    assert names == {"add", "echo_env", "env_keys", "git_credentials_present", "big", "sleep", "gated_action"}
+    assert names == {"add", "echo_env", "env_keys", "credential_exposure", "git_credentials_present", "big",
+                     "sleep", "gated_action"}
 
 
 async def test_s02_round_trip():
@@ -137,6 +138,28 @@ async def test_s07_runner_credentials_are_scrubbed():
     for name in ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL",
                  "ACTIONS_RUNTIME_TOKEN", "MCP_CLIENT_TOKEN"):
         assert name not in keys, f"{name} visible to tool code"
+
+
+async def _exposure() -> dict:
+    result = await call("credential_exposure", {})
+    assert not result.is_error, result.content
+    info = result.structured_content
+    if not info["platform"].startswith("linux"):
+        pytest.skip(f"credential isolation checks need a Linux runner, got {info['platform']}")
+    return info
+
+
+async def test_s14_no_process_in_the_chain_has_runner_credentials():
+    # Before the fix, /proc/self/environ and the parent bash/uv processes still held them.
+    info = await _exposure()
+    assert len(info["process_chain"]) >= 3, info  # tool process, supervisor, runner worker...
+    assert info["environ_leaks"] == [], f"credentials readable at {info['environ_leaks']}"
+
+
+async def test_s15_tool_code_cannot_read_supervisor_memory():
+    # The supervisor holds the OIDC request token in memory and is marked non-dumpable.
+    info = await _exposure()
+    assert info["parent_memory_readable"] is False
 
 
 async def test_s08_checkout_leaves_no_git_credentials():

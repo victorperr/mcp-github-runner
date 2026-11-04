@@ -6,7 +6,11 @@ updates:
     schedule:
       interval: weekly
   - package-ecosystem: pip
-    directory: "/"
+    directories: ["/", "/gateway"]
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: "/gateway"
     schedule:
       interval: weekly
   - package-ecosystem: uv

@@ -1,5 +1,7 @@
 import hashlib
 
+import httpx
+
 from app.oidc import DevSigner
 
 TOKEN_HASH = hashlib.sha256(b"client-secret").hexdigest()
@@ -21,7 +23,7 @@ def test_register_manifest(client, sign, app):
     r = register(client, sign)
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["mcp_url"] == "http://gw.test/s/me/demo/mcp" and body["tools"] == 1 and body["warnings"] == []
+    assert body["mcp_url"] == "http://localhost:8000/s/me/demo/mcp" and body["tools"] == 1 and body["warnings"] == []
     server = app.state.store.get_server("1")
     assert server.workflow_path == ".github/workflows/mcp.yml"
     assert server.token_hash == TOKEN_HASH
@@ -39,6 +41,45 @@ def test_manifest_rejects_other_events_and_refs(client, sign):
     assert r.status_code == 403
     assert register(client, sign).status_code == 200
     assert register(client, sign, ref="refs/heads/feature").status_code == 409
+
+
+def test_manifest_pins_workflow_file(client, sign, app):
+    # Another workflow with id-token: write on the same branch can't take the server over.
+    assert register(client, sign).status_code == 200
+    r = register(client, sign, {"client_token_sha256": "0" * 64}, workflow_path=".github/workflows/deploy.yml")
+    assert r.status_code == 409
+    assert app.state.store.get_server("1").token_hash == TOKEN_HASH
+
+
+def test_tool_call_run_cannot_upload_manifest(client, sign, app, dispatcher):
+    # A token from a tool-call job (also workflow_dispatch) must not re-register the
+    # server with its own client token.
+    assert register(client, sign).status_code == 200
+    body = {"tools": [ADD_TOOL], "client_token_sha256": "0" * 64}
+    tok = sign("workflow_dispatch", run_id="77")
+    r = client.put("/runner/manifest", json=body, headers=auth(tok))
+    assert r.status_code == 403
+    assert app.state.store.get_server("1").token_hash == TOKEN_HASH
+
+    # A manual manifest run (confirmed by GitHub) is still allowed.
+    dispatcher.verify_manifest = True
+    assert client.put("/runner/manifest", json=body, headers=auth(tok)).status_code == 200
+    assert app.state.store.get_server("1").token_hash == "0" * 64
+
+
+def test_first_registration_needs_app_installed(client, sign, dispatcher):
+    dispatcher.installed = False
+    assert register(client, sign).status_code == 403
+    dispatcher.installed = httpx.ConnectError("down")
+    assert register(client, sign).status_code == 503
+    dispatcher.installed = True
+    assert register(client, sign).status_code == 200
+
+
+def test_owner_allowlist(client, sign, app):
+    app.state.settings.allowed_owners = frozenset({"acme"})
+    assert register(client, sign).status_code == 403  # me/demo
+    assert register(client, sign, repository="ACME/tools", repository_id="9").status_code == 200
 
 
 def test_manifest_is_strict(client, sign):
@@ -60,6 +101,50 @@ def test_limits_above_gateway_caps_are_clamped(client, sign, app):
     assert body["limits"]["call_timeout_seconds"] == app.state.broker.ceilings.call_timeout_seconds
     assert body["limits"]["max_calls_per_hour"] == 10  # lowering is always allowed
     assert any("call_timeout_seconds" in w for w in body["warnings"])
+
+
+def test_api_docs_are_off_outside_dev_mode(tmp_path, dispatcher):
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    from .conftest import make_settings
+
+    app = create_app(make_settings(tmp_path, dev_mode=False, public_url="https://gw.example.com"), dispatcher=dispatcher)
+    with TestClient(app) as c:
+        for path in ("/docs", "/redoc", "/openapi.json"):
+            assert c.get(path).status_code == 404
+        assert c.get("/healthz").status_code == 200
+
+
+def test_dev_mode_refuses_public_url(tmp_path, dispatcher):
+    import pytest
+
+    from app.main import create_app
+
+    from .conftest import make_settings
+
+    with pytest.raises(ValueError, match="only for local testing"):
+        create_app(make_settings(tmp_path, public_url="https://gw.example.com"), dispatcher=dispatcher)
+
+
+def test_dev_key_is_owner_only(tmp_path):
+    import os
+    import stat
+
+    DevSigner(str(tmp_path / "k.pem"))
+    if os.name == "posix":
+        assert stat.S_IMODE((tmp_path / "k.pem").stat().st_mode) == 0o600
+
+
+def test_audience_defaults_to_public_url(monkeypatch):
+    from app.config import Settings
+
+    monkeypatch.delenv("GATEWAY_OIDC_AUDIENCE", raising=False)
+    monkeypatch.setenv("GATEWAY_PUBLIC_URL", "https://gw.example.com/")
+    assert Settings().oidc_audience == "https://gw.example.com"
+    monkeypatch.setenv("GATEWAY_OIDC_AUDIENCE", "custom")
+    assert Settings().oidc_audience == "custom"
 
 
 def test_bad_oidc_tokens(client, app, tmp_path):

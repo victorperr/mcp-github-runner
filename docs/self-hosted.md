@@ -80,12 +80,15 @@ Secrets never pass through the gateway. Only the runner sees them, and GitHub ma
 From [template/server.py](../template/server.py):
 
 ```python
+# An allowlist, not a blocklist: a check like `".." in path` is bypassed by "%2e%2e".
+ALLOWED_PATH = re.compile(r"/(status|health)|/api/v1/(orders|customers)(/[A-Za-z0-9_-]+)?")
+
 @mcp.tool(annotations={"readOnlyHint": True})
 def internal_api_get(path: str) -> dict:
     """GET a path on the internal API (only reachable from inside the network)."""
     base = os.environ["INTERNAL_API_URL"]           # e.g. http://billing.internal:8080
-    if not path.startswith("/") or ".." in path:   # keep the agent on this host
-        raise ValueError("path must be an absolute path like /status")
+    if not ALLOWED_PATH.fullmatch(path):            # keep the agent on these endpoints
+        raise ValueError("path is not allowed")
     resp = httpx.get(base + path, headers={"Authorization": f"Bearer {os.environ['INTERNAL_API_TOKEN']}"})
     return {"status": resp.status_code, "body": resp.text[:10_000]}
 ```
@@ -135,15 +138,16 @@ def restart_service(name: str) -> str:
 2. A call to a tagged tool starts the workflow with `approval: true`. The job then uses the `mcp-approval` environment, so GitHub holds it until a required reviewer approves.
 3. Meanwhile the MCP client sees progress messages such as *"Waiting for approval in the 'mcp-approval' environment: https://github.com/…/actions/runs/…"*, with the link reviewers need.
 4. After approval, GitHub adds `environment: mcp-approval` to the job's OIDC token. **The gateway checks that claim** before it hands over the call. A job that skipped the environment (for example because someone edited the workflow) gets `403 requires approval`.
-5. Before dispatching, the gateway also checks that the environment exists and has **required reviewers**. If it doesn't, the call fails right away ("fail closed"), instead of running without approval.
+5. Before dispatching, the gateway also checks that the environment exists, has **required reviewers**, and doesn't let administrators bypass them. If any of that is missing, the call fails right away ("fail closed"), instead of running without approval.
 6. If a reviewer rejects the job, the run ends. The gateway notices and tells the client "The run ended without returning a result. Was the approval rejected?" instead of waiting for the timeout.
 
 ### Set up the environment
 
 1. Repo → Settings → **Environments** → New environment → name it `mcp-approval`.
 2. Turn on **Required reviewers** and add the people or teams who may approve. Optionally turn on **Prevent self-review**.
-3. Under **Deployment branches and tags**, choose *Selected branches* → `main`, so only the registered branch can use it.
-4. Optional: put the credentials that only risky tools need (for example `DEPLOY_TOKEN`) in the **environment's** secrets instead of the repo's. GitHub only exposes environment secrets to jobs that passed approval, so even a bug in a non-gated tool can't read them.
+3. Turn **off** *Allow administrators to bypass configured protection rules* (it is on by default). The gateway refuses gated calls while it is on, because an admin could otherwise start the job without any review.
+4. Under **Deployment branches and tags**, choose *Selected branches* → `main`, so only the registered branch can use it.
+5. Optional: put the credentials that only risky tools need (for example `DEPLOY_TOKEN`) in the **environment's** secrets instead of the repo's. GitHub only exposes environment secrets to jobs that passed approval, so even a bug in a non-gated tool can't read them.
 
 Required reviewers on **private** repos need a paid GitHub plan (Team or Enterprise for organizations). Check GitHub's current plan docs.
 
@@ -166,7 +170,7 @@ Some MCP clients stop waiting long before 15 minutes. The gateway's progress not
 - [ ] **A [`mcp-runner.toml`](../template/mcp-runner.toml) policy** with an explicit `allow` list and limits that fit your use (calls per hour, argument and result size, timeouts).
 - [ ] **A committed `uv.lock`**, so the action installs exact versions (`uv sync --locked`).
 - [ ] **Secret-looking names for secret env vars** (`*_TOKEN`, `*_PASSWORD`, `*_KEY`…), or list them in the action's `redact-env`, so their values are redacted from results.
-- [ ] **`mcp-approval` environment** with required reviewers and a `main`-only branch rule, if you have any gated tools.
+- [ ] **`mcp-approval` environment** with required reviewers, admin bypass turned off, and a `main`-only branch rule, if you have any gated tools.
 - [ ] **Separate credentials per MCP repo**, all least-privileged. Destructive credentials only in environment secrets.
 - [ ] **Network egress limited** to GitHub, the gateway, your package index and the services the tools need.
 - [ ] **A long, random `MCP_CLIENT_TOKEN`**, rotated when someone with access leaves (update the secret, then push or re-run the manifest job).
@@ -181,6 +185,7 @@ Some MCP clients stop waiting long before 15 minutes. The gateway's progress not
 | *Queued, waiting for a self-hosted runner… Is a runner with the right labels online?* | No idle runner matches `runs-on`. Check that the runner is online, `MCP_RUNS_ON` matches its labels, and the runner group includes this repo. |
 | *This tool needs approval, but … has no 'mcp-approval' environment* | Create the environment (section 3). |
 | *The 'mcp-approval' environment … has no required reviewers* | Add reviewers to the environment. The gateway refuses to run gated tools without them. |
+| *The 'mcp-approval' environment … lets administrators bypass its reviewers* | In the environment's settings, turn off *Allow administrators to bypass configured protection rules*. |
 | *The run ended (failure) without returning a result* | Open the linked run. Usually a dependency install failed or the server didn't import. For gated tools it can also mean the approval was rejected. |
 | *Tool '…' requires approval: the job must run in the 'mcp-approval' environment* (in the run log) | The `environment:` line in `mcp.yml` was changed or removed, or the environment name doesn't match `approval-environment`. |
 | *The MCP GitHub Runner app is not installed on …* | Install the GitHub App on the repo. It needs **Actions: write**, **Environments: read** and **Metadata: read**. |

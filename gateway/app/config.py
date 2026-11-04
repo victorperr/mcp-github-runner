@@ -15,7 +15,9 @@ def _env(name: str, default: str = "") -> str:
 class Settings:
     public_url: str = field(default_factory=lambda: _env("GATEWAY_PUBLIC_URL", "http://localhost:8000"))
     db_path: str = field(default_factory=lambda: _env("GATEWAY_DB_PATH", "gateway.db"))
-    oidc_audience: str = field(default_factory=lambda: _env("GATEWAY_OIDC_AUDIENCE", "mcp-github-runner"))
+    # Empty = the public URL (without trailing slash). One audience per deployment means a
+    # runner token sent to another gateway (staging, self-hosted...) can't be replayed here.
+    oidc_audience: str = field(default_factory=lambda: _env("GATEWAY_OIDC_AUDIENCE"))
     call_timeout: float = field(default_factory=lambda: float(_env("GATEWAY_CALL_TIMEOUT", "300")))
     # Calls to tools that need approval wait for a person, so they get longer.
     approval_timeout: float = field(default_factory=lambda: float(_env("GATEWAY_APPROVAL_TIMEOUT", "900")))
@@ -27,6 +29,14 @@ class Settings:
     max_calls_per_hour: int = field(default_factory=lambda: int(_env("GATEWAY_MAX_CALLS_PER_HOUR", "1000")))
     max_argument_bytes: int = field(default_factory=lambda: int(_env("GATEWAY_MAX_ARGUMENT_BYTES", str(256 * 1024))))
     max_result_bytes: int = field(default_factory=lambda: int(_env("GATEWAY_MAX_RESULT_BYTES", str(4 * 1024 * 1024))))
+    # Tool arguments are checked against tenant schemas in worker processes, killed after this long.
+    argument_check_timeout: float = field(default_factory=lambda: float(_env("GATEWAY_ARGUMENT_CHECK_TIMEOUT", "2")))
+    argument_check_workers: int = field(default_factory=lambda: int(_env("GATEWAY_ARGUMENT_CHECK_WORKERS", "2")))
+    # Comma-separated GitHub owners (users or orgs) allowed to register servers. Empty = any
+    # owner that installed the GitHub App.
+    allowed_owners: frozenset[str] = field(default_factory=lambda: frozenset(
+        o.strip().lower() for o in _env("GATEWAY_ALLOWED_OWNERS").split(",") if o.strip()
+    ))
 
     # "github" dispatches workflow runs; "local" runs mcp_runner as a subprocess (dev only).
     dispatcher: str = field(default_factory=lambda: _env("GATEWAY_DISPATCHER", "github"))
@@ -42,6 +52,8 @@ class Settings:
     github_api_url: str = field(default_factory=lambda: _env("GITHUB_API_URL", "https://api.github.com"))
 
     def __post_init__(self) -> None:
+        if not self.oidc_audience:
+            self.oidc_audience = self.public_url.rstrip("/")
         key_path = _env("GITHUB_APP_PRIVATE_KEY_PATH")
         if not self.github_app_private_key and key_path:
             self.github_app_private_key = Path(key_path).read_text()

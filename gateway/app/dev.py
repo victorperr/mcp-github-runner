@@ -1,6 +1,6 @@
 """Dev helper: register a local FastMCP server with a dev-mode gateway.
 
-    python -m app.dev register --dir ../template --repo me/demo --client-token devtoken
+    python -m app.dev register --dir ../template --repo me/demo --client-token dev-token-0123456789abcdefghijklm
 
 It signs a fake push-event OIDC token with the gateway's dev key and runs
 ``mcp_runner manifest`` exactly as the Action would on GitHub.
@@ -18,6 +18,7 @@ from .config import Settings
 from .oidc import DevSigner
 
 ACTION_DIR = Path(__file__).resolve().parents[2] / "action"
+DEV_CLIENT_TOKEN = "dev-token-0123456789abcdefghijklm"  # noqa: S105 - public, local dev only
 
 
 def register(args: argparse.Namespace) -> int:
@@ -50,7 +51,8 @@ def main() -> int:
     p.add_argument("--server", default="server.py")
     p.add_argument("--repo", default="me/demo")
     p.add_argument("--repo-id", default="1")
-    p.add_argument("--client-token", default="devtoken")
+    # The runner refuses client tokens under 32 characters, dev included.
+    p.add_argument("--client-token", default=DEV_CLIENT_TOKEN)
     p.add_argument("--gateway", default=Settings().public_url)
     args = parser.parse_args()
     return register(args)

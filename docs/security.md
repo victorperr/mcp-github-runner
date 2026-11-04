@@ -42,10 +42,11 @@ Several ideas come from [GitHub Agentic Workflows](https://github.com/github/gh-
 | Control | Where |
 |---|---|
 | Bearer token per server, stored only as SHA-256 and compared in constant time | `mcp_endpoint._token_ok` |
-| Unknown repo and wrong token give the same `401`, so you can't probe which repos are registered | `mcp_endpoint.TenantMCPApp` |
+| Unknown repo and wrong token give the same `401` after the same work (one indexed lookup, one hash), so neither the answer nor its timing tells you which repos are registered | `mcp_endpoint.TenantMCPApp` |
 | Client token must be at least 32 characters (checked on the runner, which is the only place that sees it) | `mcp_runner/security.check_client_token` |
 | Policy checks before anything is dispatched, in order: **tool → argument size → argument schema → hourly rate → concurrency** | `gateway/app/policy.evaluate` |
 | Tools stay isolated between repos (no shared schema cache across tenants) | `mcp_endpoint.build_mcp_server` |
+| **Argument checks can't stall the gateway.** Schemas come from tenants, so arguments are checked in worker processes that are killed after `GATEWAY_ARGUMENT_CHECK_TIMEOUT` (2 s). A catastrophic regex `pattern` or an expensive keyword only costs its own repo a denial (`-32003`) | `gateway/app/schema_check.py` |
 | Failed authentication is audited with the client IP | `client.auth_failed` audit event |
 
 ### (2) Gateway → GitHub
@@ -54,14 +55,18 @@ Several ideas come from [GitHub Agentic Workflows](https://github.com/github/gh-
 |---|---|
 | GitHub App installation token scoped to the one repo | `GitHubAppDispatcher._installation_token` |
 | Only the call ID and an `approval` flag go into workflow inputs; arguments never do | `GitHubAppDispatcher.dispatch` |
-| **Fail closed on approval:** a gated tool is never dispatched unless the environment exists and has required reviewers | `GitHubAppDispatcher._check_approval_environment` |
+| **Fail closed on approval:** a gated tool is never dispatched unless the environment exists, has required reviewers and doesn't let admins bypass them (`can_admins_bypass: false`). A passing check is trusted for 60 s | `GitHubAppDispatcher._check_approval_environment` |
 
 ### (3) Runner → gateway
 
 | Control | Where |
 |---|---|
 | OIDC token verified: GitHub issuer, signature (JWKS), audience, expiry | `gateway/app/oidc.py` |
-| Manifest only from `push`/`workflow_dispatch`, only from the branch that registered first | `runner_api.put_manifest` |
+| The audience is the gateway's own URL by default (on both sides), so a token sent to another deployment (staging, self-hosted, or a malicious one) can't be replayed here | `config.Settings.oidc_audience`, `gateway_client.default_audience` |
+| GitHub's signing keys are cached and refreshed at most once a minute, so tokens with made-up key IDs can't make the gateway call GitHub on every request | `oidc.JWKSCache` |
+| First registration only for repos that installed the gateway's GitHub App, and only for owners in `GATEWAY_ALLOWED_OWNERS` when set. Fails closed (`503`) if GitHub can't be asked | `runner_api.put_manifest`, `GitHubAppDispatcher.is_installed` |
+| Manifest only from `push`/`workflow_dispatch`, only from the branch **and workflow file** that registered first | `runner_api.put_manifest` |
+| A `workflow_dispatch` manifest upload must be a manual manifest run (title `MCP manifest`, confirmed with GitHub). Tool-call runs are dispatch runs too, so a token from a call job can't re-register the server or replace its client token | `GitHubAppDispatcher.verify_manifest_run` |
 | Manifest is strict: unknown fields, bad tool names, duplicates, non-positive limits → `422` | `runner_api.Manifest` |
 | A call can only be read by a `workflow_dispatch` run of the registered workflow, on the registered branch, in the same repo (by `repository_id`, so renames are safe) | `runner_api._authorize_call` |
 | **Call bound to its run:** GitHub must confirm the claiming run was started for this call (run title, event, workflow path, repo). A leaked OIDC token from another run can't claim it. Fails closed if GitHub can't be asked | `GitHubAppDispatcher.verify_run` |
@@ -75,10 +80,10 @@ Several ideas come from [GitHub Agentic Workflows](https://github.com/github/gh-
 
 | Control | Where |
 |---|---|
-| **OIDC request token, Actions runtime tokens and `MCP_CLIENT_TOKEN` are removed from the environment before user code is imported.** Tool code and anything it spawns can't impersonate the runner | `mcp_runner/security.OIDCSource`, `scrub_environment` |
+| **Tool code runs in its own process, which never holds runner credentials.** The action step passes the OIDC request token and `MCP_CLIENT_TOKEN` to `mcp_runner` on stdin and removes them, plus the Actions runtime tokens, from the environment before `exec`. So neither the shell, the supervisor nor the tool process has them in `/proc/<pid>/environ`. The supervisor keeps them in memory, is marked non-dumpable on Linux (no `/proc/<pid>/mem` or `ptrace` by same-user processes), and starts the tool process (`worker.py`) with a clean environment | `action.yml`, `mcp_runner/security.read_credentials`, `harden_process`, `mcp_runner/worker.py` |
 | `MCP_CLIENT_TOKEN` isn't even passed to tool-call jobs, only to manifest jobs | template `mcp.yml` |
 | `actions/checkout` with `persist-credentials: false`, so `GITHUB_TOKEN` isn't left in `.git/config` | template `mcp.yml` |
-| **The runner re-checks everything itself, without trusting the gateway:** the tool must be published by this repo's code and policy, and a gated tool needs its own OIDC token to show the approval environment. This holds even if the gateway is compromised | `mcp_runner/__main__._execute` |
+| **The runner re-checks everything itself, without trusting the gateway:** the tool must be published by this repo's code and policy, and a gated tool needs its own OIDC token to show the approval environment. This holds even if the gateway is compromised | `mcp_runner/worker._call` |
 | `python -P` so files in the repo can't shadow the runner's own modules | `action.yml` |
 | Dependencies installed from `uv.lock` (`--locked`), with a warning if there is no lockfile | `action.yml` |
 
@@ -103,7 +108,7 @@ Every refusal comes back as an MCP tool error with a code in `_meta["mcp-github-
 | -32003 | `arguments_invalid` | gateway | Arguments don't match the tool's `inputSchema`, or the schema is broken |
 | -32004 | `rate_limited` | gateway | `max_calls_per_hour` reached |
 | -32005 | `too_many_concurrent` | gateway | `max_concurrent_calls` in flight |
-| -32006 | `approval_unavailable` | gateway | Gated tool, but the environment is missing or has no required reviewers |
+| -32006 | `approval_unavailable` | gateway | Gated tool, but the environment is missing, has no required reviewers, or lets admins bypass them |
 | -32007 | `dispatch_failed` | gateway | GitHub refused to start the run (app not installed, workflow missing…) |
 | -32008 | `timeout` | gateway | No result in time (includes approval wait) |
 | -32009 | `run_ended_without_result` | gateway | Run finished or was rejected without posting a result |
@@ -113,7 +118,7 @@ Every refusal comes back as an MCP tool error with a code in `_meta["mcp-github-
 
 ## Audit events
 
-`gateway/app/audit.py` writes JSON lines to the `mcp_github_runner.audit` logger: `manifest.registered`, `manifest.rejected`, `call.created`, `call.denied`, `call.dispatched`, `call.dispatch_failed`, `call.claimed`, `call.claim_rejected`, `call.completed`, `call.timeout`, `call.run_ended`, `runner.auth_failed`, `client.auth_failed`. They contain IDs, tool names, codes and reasons, never arguments, results or tokens. GitHub's own run logs and the Environment's approval history complete the trail.
+`gateway/app/audit.py` writes JSON lines to the `mcp_github_runner.audit` logger: `calls.recovered` (calls marked failed at startup after a restart), `manifest.registered`, `manifest.rejected`, `call.created`, `call.denied`, `call.dispatched`, `call.dispatch_failed`, `call.claimed`, `call.claim_rejected`, `call.completed`, `call.timeout`, `call.run_ended`, `runner.auth_failed`, `client.auth_failed`. They contain IDs, tool names, codes and reasons, never arguments, results or tokens. GitHub's own run logs and the Environment's approval history complete the trail.
 
 ---
 
@@ -124,7 +129,8 @@ These aren't covered, or only partly:
 - **A compromised gateway** can read arguments and results as they pass through, give clients fake results, and start *ungated* tools. It can't run gated tools without approval, because the runner checks that itself, and it never sees tool secrets. Run the gateway as sensitive infrastructure. End-to-end encryption between client and runner would close this but isn't built.
 - **Prompt injection through tool results** (for example an internal page containing instructions for the agent) is the client's problem to handle. Keep tools narrow, and gate anything with side effects.
 - **No network egress firewall on the runner.** gh-aw puts its agent behind a firewall (AWF) with a domain allowlist. Here, tool code can reach anything the runner's network can. Limit egress with network policy or a proxy (see [self-hosted.md §1](self-hosted.md#outbound-access-the-runner-needs)).
-- **No process sandbox.** Tool code runs as the runner user, and redaction only catches values it knows about. Use ephemeral runners and least-privileged credentials.
+- **No process sandbox.** Tool code runs as the runner user, and redaction only catches values it knows about. Its process holds no runner credentials, but on a host with `kernel.yama.ptrace_scope=0` it could still attach to the Actions runner's own processes. Keep `ptrace_scope` at 1 or more, and use ephemeral runners and least-privileged credentials. On **Windows** runners, any process of the same user can read another's memory, so the credential isolation is weaker there.
+- **Dependencies run next to the credentials.** The supervisor runs in the project's virtualenv, so a malicious dependency (for example a `.pth` file) runs before the credentials are read. `uv sync --locked` and dependency review are the control here.
 - **Repo writers are fully trusted.** Anyone who can push to `main` can change tools and policy. Use branch protection, required reviews and `CODEOWNERS` on `server.py`, `mcp-runner.toml` and `.github/workflows/`.
 - **Client auth is a shared bearer token** (no per-user identity, no expiry). Rotate it when people leave. GitHub OAuth per user is the planned replacement.
 - **Single gateway instance:** state is in SQLite and memory, with no high availability.

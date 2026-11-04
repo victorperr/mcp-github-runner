@@ -10,6 +10,7 @@ import json
 import re
 from typing import Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from mcp import types
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -17,12 +18,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from .audit import audit
 from .oidc import OIDCError, RunnerIdentity
 from .policy import Limits
+from .store import ServerRecord
 
 router = APIRouter(prefix="/runner")
 
 MANIFEST_EVENTS = {"push", "workflow_dispatch"}
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
-ENV_NAME = re.compile(r"^[A-Za-z0-9_.\- ]{1,255}$")
+ENV_NAME = re.compile(r"^(?!\.+$)[A-Za-z0-9_.\- ]{1,255}$")  # not "." or "..": they'd change the API path
 TOOL_NAME = re.compile(r"^[A-Za-z0-9_.\-]{1,128}$")  # MCP tool name charset
 CALL_ID = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 MAX_TOOLS = 256
@@ -101,6 +103,10 @@ def _clamp_warnings(policy: PolicyModel, ceilings: Limits) -> list[str]:
 async def put_manifest(request: Request, ident: RunnerIdentity = Depends(runner_identity)) -> dict[str, Any]:
     if ident.event_name not in MANIFEST_EVENTS:
         raise HTTPException(403, f"Manifests can only be uploaded from {sorted(MANIFEST_EVENTS)} events")
+    allowed = request.app.state.settings.allowed_owners
+    if allowed and ident.repository.split("/", 1)[0].lower() not in allowed:
+        audit("manifest.rejected", repo=ident.repository, reason="owner not allowed")
+        raise HTTPException(403, "This gateway does not accept servers from this owner")
 
     raw = await request.body()
     if len(raw) > request.app.state.settings.max_manifest_bytes:
@@ -120,15 +126,43 @@ async def put_manifest(request: Request, ident: RunnerIdentity = Depends(runner_
 
     store = request.app.state.store
     existing = store.get_server(ident.repository_id)
-    # The first upload pins the branch; uploads from other branches are refused so
-    # a feature branch can't silently replace the live tools.
+    # The first upload pins the branch and the workflow file. Uploads from another
+    # branch or workflow are refused, so a feature branch (or an unrelated workflow
+    # with id-token: write) can't replace the live tools or the client token.
     if existing and existing.ref != ident.ref:
         audit("manifest.rejected", repo=ident.repository, reason="ref mismatch", ref=ident.ref)
         raise HTTPException(
             409, f"This server is registered from {existing.ref}; refusing a manifest from {ident.ref}"
         )
+    if existing and existing.workflow_path != ident.workflow_path:
+        audit("manifest.rejected", repo=ident.repository, reason="workflow mismatch", workflow=ident.workflow_path)
+        raise HTTPException(
+            409, f"This server is registered from {existing.workflow_path}; "
+                 f"refusing a manifest from {ident.workflow_path}"
+        )
+    # Tool-call runs are workflow_dispatch runs too. A dispatch upload is accepted
+    # only if GitHub confirms it is a manual manifest run, so a token taken from a
+    # tool-call job can't re-register the server.
+    dispatcher = request.app.state.broker.dispatcher
+    candidate = existing or ServerRecord(
+        ident.repository_id, ident.repository, ident.workflow_path, ident.ref, None, None
+    )
+    if ident.event_name == "workflow_dispatch":
+        if not await dispatcher.verify_manifest_run(candidate, ident.run_id):
+            audit("manifest.rejected", repo=ident.repository, reason="not a manifest run", run_id=ident.run_id)
+            raise HTTPException(403, "workflow_dispatch manifest uploads must come from a run with no call_id")
     if not existing and not manifest.client_token_sha256:
         raise HTTPException(422, "First registration needs MCP_CLIENT_TOKEN set as a repo secret")
+    if not existing:
+        # Only repos that installed the gateway's GitHub App can register, so any
+        # repo on GitHub can't fill the gateway with servers.
+        try:
+            installed = await dispatcher.is_installed(candidate)
+        except httpx.HTTPError as exc:
+            raise HTTPException(503, "Could not check the GitHub App installation; retry later") from exc
+        if not installed:
+            audit("manifest.rejected", repo=ident.repository, reason="app not installed")
+            raise HTTPException(403, f"Install the MCP GitHub Runner app on {ident.repository} first")
 
     stored = manifest.model_dump(exclude={"client_token_sha256"})
     stored["policy"] = {"limits": manifest.policy.limits.model_dump(exclude_none=True)}

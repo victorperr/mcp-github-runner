@@ -27,6 +27,8 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           persist-credentials: false
+      # The version under test: @main after merging, or the branch name before
+      # (e.g. @fix/security-performance-review).
       - uses: victorperr/mcp-github-runner/action@main
         with:
           mode: ${{ inputs.call_id && 'call' || 'manifest' }}
