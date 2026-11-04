@@ -103,6 +103,20 @@ def test_limits_above_gateway_caps_are_clamped(client, sign, app):
     assert any("call_timeout_seconds" in w for w in body["warnings"])
 
 
+def test_api_docs_are_off_outside_dev_mode(tmp_path, dispatcher):
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    from .conftest import make_settings
+
+    app = create_app(make_settings(tmp_path, dev_mode=False), dispatcher=dispatcher)
+    with TestClient(app) as c:
+        for path in ("/docs", "/redoc", "/openapi.json"):
+            assert c.get(path).status_code == 404
+        assert c.get("/healthz").status_code == 200
+
+
 def test_audience_defaults_to_public_url(monkeypatch):
     from app.config import Settings
 

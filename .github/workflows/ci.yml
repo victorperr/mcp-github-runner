@@ -75,7 +75,9 @@ jobs:
           uv export --frozen --no-dev --format requirements-txt -o "$RUNNER_TEMP/template-req.txt" > /dev/null
           pip-audit -r "$RUNNER_TEMP/template-req.txt" --require-hashes --disable-pip --progress-spinner off \
             --ignore-vuln PYSEC-2026-2475 --ignore-vuln PYSEC-2026-2476 --ignore-vuln PYSEC-2026-2447
-      - name: Audit dev and gateway dependencies
+      - name: Audit the gateway image's locked dependencies
+        run: pip-audit -r gateway/requirements.txt --require-hashes --disable-pip --progress-spinner off
+      - name: Audit dev dependencies
         run: |
           pip-audit -r requirements-dev.txt --progress-spinner off \
             --ignore-vuln PYSEC-2026-2475 --ignore-vuln PYSEC-2026-2476 --ignore-vuln PYSEC-2026-2447

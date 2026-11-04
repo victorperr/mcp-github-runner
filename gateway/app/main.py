@@ -68,7 +68,9 @@ def create_app(settings: Settings | None = None, dispatcher: Dispatcher | None =
         finally:
             schema_checker.close()
 
-    app = FastAPI(title="MCP GitHub Runner gateway", lifespan=lifespan)
+    # The interactive API docs only describe the runner API; keep them to dev mode.
+    docs = {} if settings.dev_mode else {"docs_url": None, "redoc_url": None, "openapi_url": None}
+    app = FastAPI(title="MCP GitHub Runner gateway", lifespan=lifespan, **docs)
     app.state.settings = settings
     app.state.store = store
     app.state.oidc = oidc
