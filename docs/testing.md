@@ -72,7 +72,7 @@ This is the most important missing level: it's the only one that checks GitHub's
    | `GATEWAY_STATUS_POLL` | `15` |
    | `FORWARDED_ALLOW_IPS` | your load balancer's address, so audit logs get real client IPs |
 
-   Leave `GATEWAY_OIDC_AUDIENCE` unset (it defaults to `GATEWAY_PUBLIC_URL`, which the action also uses) and never set `GATEWAY_DEV_MODE`. Send the `mcp_github_runner.audit` logger somewhere you can search: several manual cases read it.
+   Leave `GATEWAY_OIDC_AUDIENCE` unset (it defaults to `GATEWAY_PUBLIC_URL`, which the action also uses) and never set `GATEWAY_DEV_MODE`. Audit events are on the gateway's stdout (`docker logs`): several manual cases read them.
 3. **Staging repo** (private), e.g. `victorperr/mcp-runner-staging`:
    - copy `staging/server.py`, `staging/mcp-runner.toml`, and `staging/workflow-mcp.yml` → `.github/workflows/mcp.yml`. Until the version under test is merged, change the action's `@main` to its branch;
    - run `uv init --bare && uv add "fastmcp>=2.12,<3" && uv lock`;

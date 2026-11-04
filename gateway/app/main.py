@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 
 from .audit import audit
+from .audit import enable_stdout as enable_audit_stdout
 from .calls import CallBroker
 from .config import Settings
 from .dispatch import Dispatcher, GitHubAppDispatcher, LocalDispatcher
@@ -27,6 +28,8 @@ PURGE_INTERVAL_SECONDS = 3600
 
 def create_app(settings: Settings | None = None, dispatcher: Dispatcher | None = None) -> FastAPI:
     settings = settings or Settings()
+    if settings.audit_log == "stdout":
+        enable_audit_stdout()
     store = Store(settings.db_path)
     recovered = store.fail_unfinished_calls()
     if recovered:

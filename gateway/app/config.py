@@ -29,6 +29,8 @@ class Settings:
     max_calls_per_hour: int = field(default_factory=lambda: int(_env("GATEWAY_MAX_CALLS_PER_HOUR", "1000")))
     max_argument_bytes: int = field(default_factory=lambda: int(_env("GATEWAY_MAX_ARGUMENT_BYTES", str(256 * 1024))))
     max_result_bytes: int = field(default_factory=lambda: int(_env("GATEWAY_MAX_RESULT_BYTES", str(4 * 1024 * 1024))))
+    # "stdout" prints audit events as JSON lines; "off" leaves the logger to your logging config.
+    audit_log: str = field(default_factory=lambda: _env("GATEWAY_AUDIT_LOG", "stdout"))
     # Tool arguments are checked against tenant schemas in worker processes, killed after this long.
     argument_check_timeout: float = field(default_factory=lambda: float(_env("GATEWAY_ARGUMENT_CHECK_TIMEOUT", "2")))
     argument_check_workers: int = field(default_factory=lambda: int(_env("GATEWAY_ARGUMENT_CHECK_WORKERS", "2")))
