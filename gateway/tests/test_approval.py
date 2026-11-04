@@ -184,10 +184,36 @@ async def test_dispatch_refuses_environment_without_reviewers(gh):
         await d.dispatch(_server(), "c1", "mcp-approval")
 
 
+PROTECTED = {"can_admins_bypass": False,
+             "protection_rules": [{"type": "required_reviewers", "reviewers": [{"type": "User"}]}]}
+
+
+async def test_dispatch_refuses_environment_admins_can_bypass(gh):
+    d, mock = gh
+    route = mock.get("/repos/me/demo/environments/mcp-approval")
+    for body in ({**PROTECTED, "can_admins_bypass": True}, {"protection_rules": PROTECTED["protection_rules"]}):
+        route.respond(json=body)  # explicit true, or missing (GitHub's default is true)
+        with pytest.raises(DispatchError, match="bypass"):
+            await d.dispatch(_server(), "c1", "mcp-approval")
+
+
+async def test_environment_name_is_url_encoded(gh):
+    d, mock = gh
+    route = mock.get("/repos/me/demo/environments/prod%20approvers").respond(json=PROTECTED)
+    mock.post("/repos/me/demo/actions/workflows/mcp.yml/dispatches").respond(204)
+    await d.dispatch(_server(), "c1", "prod approvers")
+    assert route.called
+
+
+def test_dot_only_environment_names_are_rejected(client, sign):
+    assert register(client, sign, approval_environment="..").status_code == 422
+    assert register(client, sign, approval_environment=".").status_code == 422
+    assert register(client, sign, approval_environment="prod.approvers").status_code == 200
+
+
 async def test_dispatch_with_approval(gh):
     d, mock = gh
-    mock.get("/repos/me/demo/environments/mcp-approval").respond(
-        json={"protection_rules": [{"type": "required_reviewers", "reviewers": [{"type": "User"}]}]})
+    mock.get("/repos/me/demo/environments/mcp-approval").respond(json=PROTECTED)
     route = mock.post("/repos/me/demo/actions/workflows/mcp.yml/dispatches").respond(204)
     await d.dispatch(_server(), "c1", "mcp-approval")
     body = json.loads(route.calls.last.request.content)

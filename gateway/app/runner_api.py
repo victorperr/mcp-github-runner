@@ -24,7 +24,7 @@ router = APIRouter(prefix="/runner")
 
 MANIFEST_EVENTS = {"push", "workflow_dispatch"}
 SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
-ENV_NAME = re.compile(r"^[A-Za-z0-9_.\- ]{1,255}$")
+ENV_NAME = re.compile(r"^(?!\.+$)[A-Za-z0-9_.\- ]{1,255}$")  # not "." or "..": they'd change the API path
 TOOL_NAME = re.compile(r"^[A-Za-z0-9_.\-]{1,128}$")  # MCP tool name charset
 CALL_ID = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 MAX_TOOLS = 256

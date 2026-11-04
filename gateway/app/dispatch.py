@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import quote
 
 import httpx
 import jwt
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 RUN_TITLE = "MCP call {call_id}"  # must match run-name in the template workflow
 MANIFEST_RUN_TITLE = "MCP manifest"  # run-name of a dispatch run with no call_id
-ENV_CHECK_TTL = 300
+ENV_CHECK_TTL = 60  # seconds a passing approval-environment check is trusted
 
 
 class DispatchError(Exception):
@@ -115,7 +116,7 @@ class GitHubAppDispatcher:
         if self._env_ok.get(key, 0) > time.time():
             return
         r = await self._http.get(
-            f"/repos/{server.owner}/{server.repo}/environments/{env}",
+            f"/repos/{server.owner}/{server.repo}/environments/{quote(env, safe='')}",
             headers={"Authorization": f"Bearer {token}"},
         )
         if r.status_code == 404:
@@ -126,12 +127,21 @@ class GitHubAppDispatcher:
             )
         if r.status_code >= 400:
             raise DispatchError(f"Could not check the '{env}' environment ({r.status_code}): {r.text}", approval=True)
-        rules = r.json().get("protection_rules") or []
+        body = r.json()
+        rules = body.get("protection_rules") or []
         has_reviewers = any(rule.get("type") == "required_reviewers" and rule.get("reviewers") for rule in rules)
         if not has_reviewers:
             raise DispatchError(
                 f"The '{env}' environment in {server.full_name} has no required reviewers, "
                 f"so approval would be skipped. Add reviewers, then retry.",
+                approval=True,
+            )
+        # GitHub lets admins bypass the reviewers by default. The job would then get
+        # the environment claim without anyone approving this call.
+        if body.get("can_admins_bypass", True) is not False:
+            raise DispatchError(
+                f"The '{env}' environment in {server.full_name} lets administrators bypass its reviewers. "
+                f"Turn off 'Allow administrators to bypass configured protection rules', then retry.",
                 approval=True,
             )
         self._env_ok[key] = time.time() + ENV_CHECK_TTL

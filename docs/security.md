@@ -55,7 +55,7 @@ Several ideas come from [GitHub Agentic Workflows](https://github.com/github/gh-
 |---|---|
 | GitHub App installation token scoped to the one repo | `GitHubAppDispatcher._installation_token` |
 | Only the call ID and an `approval` flag go into workflow inputs; arguments never do | `GitHubAppDispatcher.dispatch` |
-| **Fail closed on approval:** a gated tool is never dispatched unless the environment exists and has required reviewers | `GitHubAppDispatcher._check_approval_environment` |
+| **Fail closed on approval:** a gated tool is never dispatched unless the environment exists, has required reviewers and doesn't let admins bypass them (`can_admins_bypass: false`). A passing check is trusted for 60 s | `GitHubAppDispatcher._check_approval_environment` |
 
 ### (3) Runner → gateway
 
@@ -107,7 +107,7 @@ Every refusal comes back as an MCP tool error with a code in `_meta["mcp-github-
 | -32003 | `arguments_invalid` | gateway | Arguments don't match the tool's `inputSchema`, or the schema is broken |
 | -32004 | `rate_limited` | gateway | `max_calls_per_hour` reached |
 | -32005 | `too_many_concurrent` | gateway | `max_concurrent_calls` in flight |
-| -32006 | `approval_unavailable` | gateway | Gated tool, but the environment is missing or has no required reviewers |
+| -32006 | `approval_unavailable` | gateway | Gated tool, but the environment is missing, has no required reviewers, or lets admins bypass them |
 | -32007 | `dispatch_failed` | gateway | GitHub refused to start the run (app not installed, workflow missing…) |
 | -32008 | `timeout` | gateway | No result in time (includes approval wait) |
 | -32009 | `run_ended_without_result` | gateway | Run finished or was rejected without posting a result |
