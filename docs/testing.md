@@ -22,7 +22,7 @@ This is the test plan for taking MCP GitHub Runner from a tested prototype to so
 | Workflow security (template injection, unpinned actions, excessive permissions…) | `zizmor --offline --config zizmor.yml .github/workflows action/action.yml template/.github/workflows` | 0 findings |
 | Known vulnerabilities, template lockfile | `uv export --frozen …` then `pip-audit --require-hashes` (see `ci.yml`) | 0 findings that aren't in the reviewed list below |
 | Known vulnerabilities, dev and gateway deps | `pip-audit -r requirements-dev.txt` | same |
-| Pinned actions stay current | Dependabot (`.github/dependabot.yml`) | Weekly PRs reviewed |
+| Pinned actions and dependencies stay current | Manual, before each release: check new versions of the pinned actions (`action.yml`, workflows) and of `fastmcp`/`mcp`; upgrade on a branch and run all levels. Known vulnerabilities are caught on every push by the `audit` job | Nothing more than one release behind without a reason |
 
 ### Known vulnerabilities (reviewed, ignored in CI)
 
