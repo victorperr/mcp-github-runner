@@ -283,6 +283,23 @@ def test_cli_rejects_plain_http_gateway(monkeypatch):
     assert main(["call", "--gateway", "http://evil.example", "--call-id", CALL_ID]) == 1
 
 
+@pytest.mark.parametrize("url", [
+    "http://localhost.evil.com", "http://127.0.0.1.nip.io", "http://localhost@evil.com", "ftp://gw.test", "nonsense",
+])
+def test_gateway_url_lookalikes_are_refused(url):
+    from mcp_runner.gateway_client import GatewayError, check_gateway_url
+
+    with pytest.raises(GatewayError):
+        check_gateway_url(url)
+
+
+@pytest.mark.parametrize("url", ["https://gw.test", "http://localhost:8000", "http://127.0.0.1:9", "http://[::1]:8000"])
+def test_gateway_url_allowed(url):
+    from mcp_runner.gateway_client import check_gateway_url
+
+    check_gateway_url(url)
+
+
 @respx.mock
 def test_cli_gateway_error_exits_nonzero(monkeypatch):
     monkeypatch.chdir(TEMPLATE)
