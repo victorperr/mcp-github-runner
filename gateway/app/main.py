@@ -14,6 +14,7 @@ from .mcp_endpoint import TenantMCPApp, build_mcp_server
 from .oidc import DEV_ISSUER, DevSigner, OIDCVerifier
 from .policy import Limits
 from .runner_api import router as runner_router
+from .schema_check import SchemaChecker
 from .store import Store
 
 
@@ -49,18 +50,23 @@ def create_app(settings: Settings | None = None, dispatcher: Dispatcher | None =
         call_timeout_seconds=int(settings.call_timeout),
         approval_timeout_seconds=int(settings.approval_timeout),
     )
+    schema_checker = SchemaChecker(timeout=settings.argument_check_timeout, workers=settings.argument_check_workers)
     broker = CallBroker(
         store, dispatcher,
         ceilings=ceilings,
         heartbeat_interval=settings.heartbeat_interval,
         status_poll_interval=settings.status_poll_interval,
+        schema_checker=schema_checker,
     )
     manager = StreamableHTTPSessionManager(app=build_mcp_server(store, broker), stateless=True)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        async with manager.run():
-            yield
+        try:
+            async with manager.run():
+                yield
+        finally:
+            schema_checker.close()
 
     app = FastAPI(title="MCP GitHub Runner gateway", lifespan=lifespan)
     app.state.settings = settings

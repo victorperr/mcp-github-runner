@@ -9,7 +9,8 @@ from typing import Any, Awaitable, Callable
 
 from .audit import audit
 from .dispatch import Dispatcher, DispatchError, RunInfo
-from .policy import Code, Denial, Limits, evaluate
+from .policy import Code, Denial, Limits, check_quota, check_request, input_schema, tool_spec, validate_arguments
+from .schema_check import SchemaChecker
 from .store import ServerRecord, Store
 
 Heartbeat = Callable[[float, str], Awaitable[None]]
@@ -43,16 +44,25 @@ class CallBroker:
         ceilings: Limits,
         heartbeat_interval: float,
         status_poll_interval: float = 15,
+        schema_checker: SchemaChecker | None = None,
     ):
         self.store = store
         self.dispatcher = dispatcher
         self.ceilings = ceilings
         self.heartbeat_interval = heartbeat_interval
         self.status_poll_interval = status_poll_interval
+        # None checks schemas in this process (tests); the app always isolates them.
+        self.schema_checker = schema_checker
         self._waiters: dict[str, asyncio.Future[dict[str, Any]]] = {}
 
     def limits_for(self, server: ServerRecord) -> Limits:
         return Limits.effective(server.manifest, self.ceilings)
+
+    async def _check_arguments(self, server: ServerRecord, tool: str, arguments: dict[str, Any]) -> Denial | None:
+        schema = input_schema(tool_spec(server.manifest, tool))
+        if self.schema_checker is None:
+            return validate_arguments(schema, arguments)
+        return await self.schema_checker.check(schema, arguments)
 
     async def run(
         self,
@@ -62,11 +72,17 @@ class CallBroker:
         heartbeat: Heartbeat | None = None,
     ) -> dict[str, Any]:
         limits = self.limits_for(server)
-        denial = evaluate(
-            server.manifest, tool, arguments,
-            limits=limits,
-            calls_last_hour=self.store.count_calls_since(server.repository_id, time.time() - 3600),
-            active_calls=self.store.count_active_calls(server.repository_id),
+        # Same guard order as policy.evaluate. The schema check runs off the event
+        # loop; the quota check runs after it, with no await before create_call,
+        # so concurrent calls can't both slip under the limits.
+        denial = (
+            check_request(server.manifest, tool, arguments, limits=limits)
+            or await self._check_arguments(server, tool, arguments)
+            or check_quota(
+                limits=limits,
+                calls_last_hour=self.store.count_calls_since(server.repository_id, time.time() - 3600),
+                active_calls=self.store.count_active_calls(server.repository_id),
+            )
         )
         if denial is not None:
             audit("call.denied", repo=server.full_name, tool=tool, code=int(denial.code), reason=denial.reason)

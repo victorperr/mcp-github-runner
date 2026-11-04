@@ -46,6 +46,7 @@ Several ideas come from [GitHub Agentic Workflows](https://github.com/github/gh-
 | Client token must be at least 32 characters (checked on the runner, which is the only place that sees it) | `mcp_runner/security.check_client_token` |
 | Policy checks before anything is dispatched, in order: **tool → argument size → argument schema → hourly rate → concurrency** | `gateway/app/policy.evaluate` |
 | Tools stay isolated between repos (no shared schema cache across tenants) | `mcp_endpoint.build_mcp_server` |
+| **Argument checks can't stall the gateway.** Schemas come from tenants, so arguments are checked in worker processes that are killed after `GATEWAY_ARGUMENT_CHECK_TIMEOUT` (2 s). A catastrophic regex `pattern` or an expensive keyword only costs its own repo a denial (`-32003`) | `gateway/app/schema_check.py` |
 | Failed authentication is audited with the client IP | `client.auth_failed` audit event |
 
 ### (2) Gateway → GitHub

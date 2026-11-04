@@ -27,6 +27,9 @@ class Settings:
     max_calls_per_hour: int = field(default_factory=lambda: int(_env("GATEWAY_MAX_CALLS_PER_HOUR", "1000")))
     max_argument_bytes: int = field(default_factory=lambda: int(_env("GATEWAY_MAX_ARGUMENT_BYTES", str(256 * 1024))))
     max_result_bytes: int = field(default_factory=lambda: int(_env("GATEWAY_MAX_RESULT_BYTES", str(4 * 1024 * 1024))))
+    # Tool arguments are checked against tenant schemas in worker processes, killed after this long.
+    argument_check_timeout: float = field(default_factory=lambda: float(_env("GATEWAY_ARGUMENT_CHECK_TIMEOUT", "2")))
+    argument_check_workers: int = field(default_factory=lambda: int(_env("GATEWAY_ARGUMENT_CHECK_WORKERS", "2")))
     # Comma-separated GitHub owners (users or orgs) allowed to register servers. Empty = any
     # owner that installed the GitHub App.
     allowed_owners: frozenset[str] = field(default_factory=lambda: frozenset(
