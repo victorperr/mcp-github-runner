@@ -34,6 +34,12 @@ class RecordingDispatcher:
     async def verify_manifest_run(self, server, run_id):
         return self.verify_manifest
 
+    def forget(self, call_id):
+        self.forgotten = [*getattr(self, "forgotten", []), call_id]
+
+    async def aclose(self):
+        pass
+
 
 def make_settings(tmp_path: Path, **overrides) -> Settings:
     s = Settings()

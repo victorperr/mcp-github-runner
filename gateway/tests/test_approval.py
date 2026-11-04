@@ -232,15 +232,39 @@ async def test_dispatch_without_approval_skips_env_check(gh):
 
 async def test_run_status_finds_run_by_title(gh):
     d, mock = gh
-    mock.get("/repos/me/demo/actions/workflows/mcp.yml/runs").respond(json={"workflow_runs": [
+    listing = mock.get("/repos/me/demo/actions/workflows/mcp.yml/runs").respond(json={"workflow_runs": [
         {"id": 1, "display_title": "MCP call other", "status": "queued", "html_url": "u1"},
         {"id": 2, "display_title": "MCP call c9", "status": "waiting", "conclusion": None, "html_url": "u2"},
     ]})
     mock.get("/repos/me/demo/actions/runs/2").respond(
         json={"id": 2, "status": "completed", "conclusion": "failure", "html_url": "u2"})
     assert await d.run_status(_server(), "c9") == RunInfo("waiting", None, "u2")
+    params = listing.calls.last.request.url.params
+    assert params["branch"] == "main" and params["created"].startswith(">=") and params["per_page"] == "100"
     assert await d.run_status(_server(), "c9") == RunInfo("completed", "failure", "u2")
     assert await d.run_status(_server(), "missing") is None
+    d.forget("c9")
+    assert "c9" not in d._run_ids
+
+
+async def test_installation_tokens_are_per_repo_and_refreshed_once(gh):
+    import asyncio
+
+    d, mock = gh
+    tokens = mock.post("/app/installations/42/access_tokens").respond(json={"token": "inst"})
+    mock.get("/repos/me/other/installation").respond(json={"id": 42})
+    other = ServerRecord("2", "me/other", ".github/workflows/mcp.yml", "refs/heads/main", None, None)
+    await asyncio.gather(*(d._installation_token(_server()) for _ in range(5)))
+    assert tokens.call_count == 1  # concurrent callers share one refresh
+    await d._installation_token(other)
+    assert tokens.call_count == 2  # same installation, different repo: its own scoped token
+    assert json.loads(tokens.calls.last.request.content) == {"repository_ids": [2]}
+
+
+async def test_broker_forgets_call_state(tmp_path):
+    d = RecordingDispatcher(statuses=[RunInfo("completed", "success", "u")])
+    await _broker(tmp_path, d).run(_server(), "add", {}, None)
+    assert d.forgotten == [d.calls[0][0]]
 
 
 async def test_run_status_swallows_api_errors(gh):

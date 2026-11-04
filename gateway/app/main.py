@@ -91,6 +91,7 @@ def create_app(settings: Settings | None = None, dispatcher: Dispatcher | None =
         finally:
             purger.cancel()
             schema_checker.close()
+            await dispatcher.aclose()
 
     # The interactive API docs only describe the runner API; keep them to dev mode.
     docs = {} if settings.dev_mode else {"docs_url": None, "redoc_url": None, "openapi_url": None}

@@ -149,6 +149,7 @@ class CallBroker:
                     await heartbeat(elapsed, describe(info, approval_env, elapsed))
         finally:
             self._waiters.pop(call_id, None)
+            self.dispatcher.forget(call_id)
             if not future.done():
                 future.cancel()
 

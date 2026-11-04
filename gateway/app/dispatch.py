@@ -27,7 +27,8 @@ logger = logging.getLogger(__name__)
 RUN_TITLE = "MCP call {call_id}"  # must match run-name in the template workflow
 MANIFEST_RUN_TITLE = "MCP manifest"  # run-name of a dispatch run with no call_id
 ENV_CHECK_TTL = 60  # seconds a passing approval-environment check is trusted
-GATEWAY_ONLY_ENV = ("GITHUB_APP_", "GATEWAY_")  # env var prefixes LocalDispatcher doesn't pass on
+RUN_LOOKUP_SKEW = 120  # seconds of clock difference tolerated when finding a call's run
+GATEWAY_ONLY_ENV =("GITHUB_APP_", "GATEWAY_")  # env var prefixes LocalDispatcher doesn't pass on
 
 
 class DispatchError(Exception):
@@ -60,6 +61,12 @@ class Dispatcher(Protocol):
         """True if the gateway's GitHub App is installed on the repo. Raises if GitHub can't be asked."""
         ...
 
+    def forget(self, call_id: str) -> None:
+        """Drop per-call state once the broker stops waiting for the call."""
+        ...
+
+    async def aclose(self) -> None: ...
+
 
 class GitHubAppDispatcher:
     def __init__(self, app_id: str, private_key: str, api_url: str = "https://api.github.com"):
@@ -73,9 +80,18 @@ class GitHubAppDispatcher:
             timeout=30,
         )
         self._installations: dict[str, int] = {}
-        self._tokens: dict[int, tuple[str, float]] = {}
+        self._tokens: dict[tuple[int, str], tuple[str, float]] = {}
+        self._token_locks: dict[tuple[int, str], asyncio.Lock] = {}
         self._env_ok: dict[tuple[str, str], float] = {}
         self._run_ids: dict[str, int] = {}
+        self._dispatched_at: dict[str, float] = {}
+
+    async def aclose(self) -> None:
+        await self._http.aclose()
+
+    def forget(self, call_id: str) -> None:
+        self._run_ids.pop(call_id, None)
+        self._dispatched_at.pop(call_id, None)
 
     def _app_jwt(self) -> str:
         now = int(time.time())
@@ -96,20 +112,28 @@ class GitHubAppDispatcher:
             inst_id = r.json()["id"]
             self._installations[server.repository_id] = inst_id
 
-        cached = self._tokens.get(inst_id)
+        # Tokens are scoped to one repo, so they are cached per repo, not per installation.
+        key = (inst_id, server.repository_id)
+        cached = self._tokens.get(key)
         if cached and cached[1] > time.time() + 300:
             return cached[0]
-        r = await self._http.post(
-            f"/app/installations/{inst_id}/access_tokens",
-            headers={"Authorization": f"Bearer {self._app_jwt()}"},
-            # Scope the token to this one repo; it gets the App's permissions.
-            json={"repository_ids": [int(server.repository_id)]},
-        )
-        r.raise_for_status()
-        body = r.json()
-        # Tokens live 1h; refreshing after ~50 min is enough.
-        self._tokens[inst_id] = (body["token"], time.time() + 3000)
-        return body["token"]
+        # One refresh per repo at a time: concurrent calls wait for it
+        # instead of each asking GitHub for a new token.
+        async with self._token_locks.setdefault(key, asyncio.Lock()):
+            cached = self._tokens.get(key)
+            if cached and cached[1] > time.time() + 300:
+                return cached[0]
+            r = await self._http.post(
+                f"/app/installations/{inst_id}/access_tokens",
+                headers={"Authorization": f"Bearer {self._app_jwt()}"},
+                # Scope the token to this one repo; it gets the App's permissions.
+                json={"repository_ids": [int(server.repository_id)]},
+            )
+            r.raise_for_status()
+            body = r.json()
+            # Tokens live 1h; refreshing after ~50 min is enough.
+            self._tokens[key] = (body["token"], time.time() + 3000)
+            return body["token"]
 
     async def _check_approval_environment(self, server: ServerRecord, env: str, token: str) -> None:
         """Fail closed unless the Environment exists and has required reviewers."""
@@ -153,6 +177,7 @@ class GitHubAppDispatcher:
             await self._check_approval_environment(server, approval_env, token)
         workflow_file = Path(server.workflow_path).name
         ref = server.ref.removeprefix("refs/heads/")
+        self._dispatched_at[call_id] = time.time()
         r = await self._http.post(
             f"/repos/{server.owner}/{server.repo}/actions/workflows/{workflow_file}/dispatches",
             headers={"Authorization": f"Bearer {token}"},
@@ -171,9 +196,17 @@ class GitHubAppDispatcher:
             run_id = self._run_ids.get(call_id)
             if run_id is None:
                 workflow_file = Path(server.workflow_path).name
+                # Only runs created since this dispatch (minus clock skew), on the
+                # registered branch: under load the run is still on the first page.
+                since = self._dispatched_at.get(call_id, time.time()) - RUN_LOOKUP_SKEW
                 r = await self._http.get(
                     f"/repos/{server.owner}/{server.repo}/actions/workflows/{workflow_file}/runs",
-                    params={"event": "workflow_dispatch", "per_page": 30},
+                    params={
+                        "event": "workflow_dispatch",
+                        "branch": server.ref.removeprefix("refs/heads/"),
+                        "created": ">=" + time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since)),
+                        "per_page": 100,
+                    },
                     headers=auth,
                 )
                 r.raise_for_status()
@@ -186,8 +219,6 @@ class GitHubAppDispatcher:
                 r = await self._http.get(f"/repos/{server.owner}/{server.repo}/actions/runs/{run_id}", headers=auth)
                 r.raise_for_status()
                 run = r.json()
-            if run.get("status") == "completed":
-                self._run_ids.pop(call_id, None)
             return RunInfo(status=run["status"], conclusion=run.get("conclusion"), url=run["html_url"])
         except (httpx.HTTPError, DispatchError, KeyError) as exc:
             logger.warning("run status lookup failed for call %s: %s", call_id, exc)
@@ -309,3 +340,9 @@ class LocalDispatcher:
 
     async def is_installed(self, server: ServerRecord) -> bool:
         return True
+
+    def forget(self, call_id: str) -> None:
+        self._runs.pop(call_id, None)
+
+    async def aclose(self) -> None:
+        return None
