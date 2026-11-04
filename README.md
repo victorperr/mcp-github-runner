@@ -80,7 +80,7 @@ npx @modelcontextprotocol/inspector   # connect to http://localhost:8000/s/me/de
 ### Deploy the gateway
 
 1. Create a GitHub App with repository permissions **Actions: write**, **Environments: read** and **Metadata: read**. No webhook is needed.
-2. Deploy `gateway/Dockerfile` (Fly.io, Cloud Run, Render…) with a persistent volume on `/data` and these env vars:
+2. Deploy `gateway/Dockerfile` (Fly.io, Cloud Run, Render…) with a persistent volume on `/data` and these env vars. The container runs as UID 10001: a new Docker volume gets the right owner automatically, but a host directory must be made writable by that UID (`chown 10001 <dir>`). Env vars:
    `GATEWAY_PUBLIC_URL`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` (or `GITHUB_APP_PRIVATE_KEY_PATH`).
    Optional caps (repos can lower them in `mcp-runner.toml`, never raise them): `GATEWAY_CALL_TIMEOUT` (300), `GATEWAY_APPROVAL_TIMEOUT` (900), `GATEWAY_MAX_PENDING_CALLS` (5 per repo), `GATEWAY_MAX_CALLS_PER_HOUR` (1000), `GATEWAY_MAX_ARGUMENT_BYTES` (256 KB), `GATEWAY_MAX_RESULT_BYTES` (4 MB). Also `GATEWAY_STATUS_POLL` (15), `GATEWAY_OIDC_AUDIENCE` (defaults to `GATEWAY_PUBLIC_URL`; the action uses the gateway URL too, so each deployment has its own audience), `GATEWAY_ALLOWED_OWNERS` (comma-separated users/orgs allowed to register; empty means any repo that installed the App), and `GATEWAY_ARGUMENT_CHECK_TIMEOUT` (2 s) / `GATEWAY_ARGUMENT_CHECK_WORKERS` (2) for the isolated argument checks.
    Send the `mcp_github_runner.audit` logger to your log pipeline.

@@ -53,6 +53,36 @@ jobs:
           if [ "$SUITE" = "action" ]; then cov=mcp_runner; min=85; else cov=app; min=90; fi
           python -m pytest -q --cov="$cov" --cov-report=term-missing --cov-fail-under="$min"
 
+  image:
+    name: Gateway image (build + smoke test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Build
+        run: docker build -t mcp-gateway:ci gateway
+      - name: Start with a production-like config
+        # Dummy App credentials: the gateway only uses them when it talks to GitHub.
+        run: |
+          docker run -d --name gw -p 8000:8000 \
+            -e GATEWAY_PUBLIC_URL=https://gw.example.com \
+            -e GITHUB_APP_ID=1 -e GITHUB_APP_PRIVATE_KEY=not-used-by-the-smoke-test \
+            mcp-gateway:ci
+          for _ in $(seq 1 30); do curl -fsS http://localhost:8000/healthz && exit 0; sleep 1; done
+          exit 1
+      - name: Smoke test
+        run: |
+          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          test "$(docker exec gw id -u)" = 10001                                # not root
+          docker exec gw test -s /data/gateway.db                              # volume writable
+          test "$(code http://localhost:8000/openapi.json)" = 404             # docs off outside dev mode
+          test "$(code -X POST http://localhost:8000/s/me/demo/mcp)" = 401    # MCP endpoint needs a token
+          test "$(code -X PUT http://localhost:8000/runner/manifest)" = 401   # runner API needs OIDC
+      - name: Gateway logs
+        if: always()
+        run: docker logs gw
+
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest
