@@ -51,7 +51,9 @@ runs:
     # Third-party actions are pinned to a full commit SHA (tag in the comment), like gh-aw's action pinning.
     - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
       with:
-        enable-cache: true
+        # auto = GitHub cache on GitHub-hosted runners only. Self-hosted runners keep uv's
+        # cache on disk, so restoring/saving it through GitHub on every call only adds time.
+        enable-cache: auto
         python-version: ${{ inputs.python-version }}
         working-directory: ${{ inputs.working-directory }}
 
