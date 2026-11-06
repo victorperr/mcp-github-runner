@@ -110,7 +110,7 @@ The checklist for runners, branches and credentials is in [docs/self-hosted.md Â
 
 ## Status
 
-Preview. Not yet tested on real GitHub infrastructure. See the release gates in [docs/testing.md](docs/testing.md#release-gates-when-you-can-sell).
+Preview. The automated staging suite (S01â€“S15) passes on real GitHub infrastructure (2026-11-06); the manual staging cases and the other release gates are still open. See [docs/testing.md](docs/testing.md#release-gates-when-you-can-sell).
 
 ## License
 
