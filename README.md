@@ -83,7 +83,7 @@ npx @modelcontextprotocol/inspector   # connect to http://localhost:8000/s/me/de
 2. Deploy `gateway/Dockerfile` (Fly.io, Cloud Run, Render…) with a persistent volume on `/data` and these env vars. The container runs as UID 10001: a new Docker volume gets the right owner automatically, but a host directory must be made writable by that UID (`chown 10001 <dir>`). Env vars:
    `GATEWAY_PUBLIC_URL`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` (or `GITHUB_APP_PRIVATE_KEY_PATH`).
    Optional caps (repos can lower them in `mcp-runner.toml`, never raise them): `GATEWAY_CALL_TIMEOUT` (300), `GATEWAY_APPROVAL_TIMEOUT` (900), `GATEWAY_MAX_PENDING_CALLS` (5 per repo), `GATEWAY_MAX_CALLS_PER_HOUR` (1000), `GATEWAY_MAX_ARGUMENT_BYTES` (256 KB), `GATEWAY_MAX_RESULT_BYTES` (4 MB). Also `GATEWAY_STATUS_POLL` (15), `GATEWAY_OIDC_AUDIENCE` (defaults to `GATEWAY_PUBLIC_URL`; the action uses the gateway URL too, so each deployment has its own audience), `GATEWAY_ALLOWED_OWNERS` (comma-separated users/orgs allowed to register; empty means any repo that installed the App), and `GATEWAY_ARGUMENT_CHECK_TIMEOUT` (2 s) / `GATEWAY_ARGUMENT_CHECK_WORKERS` (2) for the isolated argument checks.
-   Send the `mcp_github_runner.audit` logger to your log pipeline.
+   Audit events are printed on stdout as JSON lines (the `mcp_github_runner.audit` logger); collect them with your platform's logs, or set `GATEWAY_AUDIT_LOG=off` and route that logger yourself.
 3. Tag a release (`git tag v1.0.0 && git tag -f v1 && git push --tags`). Repos then use `victorperr/mcp-github-runner/action@v1`, or better, its commit SHA. Each repo sets the repo variable `MCP_GATEWAY_URL` to the gateway's `https://` address. The action has no default address on purpose.
 
 ## Security
@@ -110,7 +110,7 @@ The checklist for runners, branches and credentials is in [docs/self-hosted.md �
 
 ## Status
 
-Preview. Not yet tested on real GitHub infrastructure. See the release gates in [docs/testing.md](docs/testing.md#release-gates-when-you-can-sell).
+Preview. The automated staging suite (S01–S15) passes on real GitHub infrastructure (2026-11-06); the manual staging cases and the other release gates are still open. See [docs/testing.md](docs/testing.md#release-gates-when-you-can-sell).
 
 ## License
 

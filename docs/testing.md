@@ -2,12 +2,12 @@
 
 This is the test plan for taking MCP GitHub Runner from a tested prototype to something you can sell. Each level has exact commands and pass criteria, and the **release gates** at the end decide whether a version may be sold.
 
-| Level | What it proves | How it runs | Status (2026-11-03) |
+| Level | What it proves | How it runs | Status (2026-11-06) |
 |---|---|---|---|
-| L0 Static | Code and workflows follow safe patterns; no vulnerable dependencies; the gateway image builds and starts | CI `lint`, `audit` and `image` jobs | ✅ lint and audit pass locally; `image` runs in CI only |
-| L1 Unit | Each module's logic, including the policy rules | CI `test` job | ✅ 166 tests (2026-11-04), coverage gates (85% runner / 90% gateway) met |
+| L0 Static | Code and workflows follow safe patterns; no vulnerable dependencies; the gateway image builds and starts | CI `lint`, `audit` and `image` jobs | ✅ green in CI on `main`, and locally |
+| L1 Unit | Each module's logic, including the policy rules | CI `test` job | ✅ 169 tests, coverage 89% runner / 94% gateway (gates 85% / 90%) |
 | L2 Local end to end | Real gateway, runner and MCP client, no GitHub | CI `test` job (`gateway/tests/test_e2e.py`) | ✅ passes |
-| L3 Staging on real GitHub | Approvals, OIDC claims, run binding and runners on real infrastructure | `staging.yml` (manual) + manual cases | ❌ **not run yet** |
+| L3 Staging on real GitHub | Approvals, OIDC claims, run binding and runners on real infrastructure | `staging.yml` (manual) + manual cases | 🟡 automated S01–S15 pass; manual M01–M19 not run |
 | L4 Security | Someone actively trying to break it | Fuzzing + manual pentest | ❌ not run |
 | L5 Load and reliability | Behaviour under traffic, restarts, outages | Load script + chaos cases | ❌ not run |
 | L6 Pilot | Real customers get value | 2–3 design partners | ❌ not started |
@@ -22,7 +22,7 @@ This is the test plan for taking MCP GitHub Runner from a tested prototype to so
 | Workflow security (template injection, unpinned actions, excessive permissions…) | `zizmor --offline --config zizmor.yml .github/workflows action/action.yml template/.github/workflows` | 0 findings |
 | Known vulnerabilities, template lockfile | `uv export --frozen …` then `pip-audit --require-hashes` (see `ci.yml`) | 0 findings that aren't in the reviewed list below |
 | Known vulnerabilities, dev and gateway deps | `pip-audit -r requirements-dev.txt` | same |
-| Pinned actions stay current | Dependabot (`.github/dependabot.yml`) | Weekly PRs reviewed |
+| Pinned actions and dependencies stay current | Manual, before each release: check new versions of the pinned actions (`action.yml`, workflows) and of `fastmcp`/`mcp`; upgrade on a branch and run all levels. Known vulnerabilities are caught on every push by the `audit` job | Nothing more than one release behind without a reason |
 
 ### Known vulnerabilities (reviewed, ignored in CI)
 
@@ -61,6 +61,8 @@ This is the most important missing level: it's the only one that checks GitHub's
 
 ### Setup (once)
 
+A ready-made version of this setup on one Windows laptop (gateway + runner in WSL, Tailscale Funnel for HTTPS), with every command including the manual cases: [staging-laptop.md](staging-laptop.md).
+
 1. **GitHub App**: create one with repository permissions **Actions: write**, **Environments: read**, **Metadata: read**, and no webhook. Note its App ID and download a private key.
 2. **Gateway**: deploy the image built from `gateway/Dockerfile` (CI's `image` job builds and smoke-tests it) at an HTTPS URL, with a persistent volume on `/data` writable by UID 10001, and:
 
@@ -72,8 +74,8 @@ This is the most important missing level: it's the only one that checks GitHub's
    | `GATEWAY_STATUS_POLL` | `15` |
    | `FORWARDED_ALLOW_IPS` | your load balancer's address, so audit logs get real client IPs |
 
-   Leave `GATEWAY_OIDC_AUDIENCE` unset (it defaults to `GATEWAY_PUBLIC_URL`, which the action also uses) and never set `GATEWAY_DEV_MODE`. Send the `mcp_github_runner.audit` logger somewhere you can search: several manual cases read it.
-3. **Staging repo** (private), e.g. `victorperr/mcp-runner-staging`:
+   Leave `GATEWAY_OIDC_AUDIENCE` unset (it defaults to `GATEWAY_PUBLIC_URL`, which the action also uses) and never set `GATEWAY_DEV_MODE`. Audit events are on the gateway's stdout (`docker logs`): several manual cases read them.
+3. **Staging repo** (public: required reviewers on a private repo need GitHub Enterprise), e.g. `victorperr/mcp-runner-staging`:
    - copy `staging/server.py`, `staging/mcp-runner.toml`, and `staging/workflow-mcp.yml` → `.github/workflows/mcp.yml`. Until the version under test is merged, change the action's `@main` to its branch;
    - run `uv init --bare && uv add "fastmcp>=2.12,<3" && uv lock`;
    - secrets `MCP_CLIENT_TOKEN` (32+ chars) and `STAGING_SECRET` (any 8+ char value);
@@ -150,6 +152,14 @@ M13 step (temporary, after the action step in the staging repo's `mcp.yml`). It 
             -d "{\"tools\": [], \"client_token_sha256\": \"$zeros\"}"
 ```
 
+### Results log
+
+One row per staging session. Latency is printed by S03 (`gh run view <run-id> --log | grep latency`).
+
+| Date | Version tested | Automated S01–S15 | Manual cases | S03 latency (p50 / p95) | Notes |
+|---|---|---|---|---|---|
+| 2026-11-06 | `main` @ `5a03739` | ✅ all pass ([run](https://github.com/victorperr/mcp-github-runner/actions/runs/42220690955)) | not run | to record | Laptop setup, one runner: S13's calls ran one after another |
+
 ### Client compatibility matrix
 
 For each client: connect, list tools, call `add`, call `sleep(45)`, call `gated_action` with a 2-minute approval delay. Record whether progress messages are shown and after how long the client gives up.
@@ -194,9 +204,9 @@ A version can be sold only when **every** gate is green.
 
 | Gate | Requirement | Status |
 |---|---|---|
-| G0 | L0–L2 green in CI on `main` | ✅ locally, ⏳ CI after first push |
+| G0 | L0–L2 green in CI on `main` | ✅ |
 | G1 | No ignored vulnerabilities: **upgrade to fastmcp ≥ 3.2** | ❌ |
-| G2 | L3 staging: S01–S13 and M01–M12 pass; latency recorded | ❌ |
+| G2 | L3 staging: S01–S15 and M01–M19 pass; latency recorded | 🟡 S01–S15 pass (2026-11-06); manual cases and latency open |
 | G3 | Client matrix: 3+ clients pass all steps | ❌ |
 | G4 | L4: no open high/critical findings; IP rate limiting on the MCP endpoint | ❌ |
 | G5 | L5 targets met; gateway runs on a highly available setup (Postgres + Redis instead of SQLite + memory) | ❌ |
@@ -204,3 +214,13 @@ A version can be sold only when **every** gate is green.
 | G7 | L6 pilot: 2–3 design partners use it for 2+ weeks and at least one would pay | ❌ |
 
 Until G2 passes, describe the product as a **preview**. Until G7, don't take payment. A paid design-partner pilot with clear "beta" terms is the usual middle step.
+
+### What remains, in order
+
+1. **G2:** run M01–M19 with [staging-laptop.md](staging-laptop.md#manual-cases-m01m19); record latency and results in the [results log](#results-log).
+2. **G1:** upgrade to fastmcp ≥ 3.2 on a branch, rerun L0–L3, then remove the ignored vulnerabilities from `ci.yml` and this file.
+3. **Product decision, approvals on private repos:** GitHub only allows required reviewers on private repos with GitHub Enterprise (seen in staging, 2026-11-06). Customers on other plans can't use gated tools from a private repo, and [self-hosted.md](self-hosted.md#4-hardening-checklist) rightly forbids self-hosted runners on public repos. Decide before selling: target Enterprise customers, implement approval in the gateway itself, or document gated tools as Enterprise-only.
+4. **G3:** client matrix with at least 3 clients.
+5. **G4 and G5:** fuzzing, IP rate limiting, container scan, external pentest; load tests and the move to Postgres + Redis.
+6. **G6:** hosted gateway on a real domain with monitoring and backups, published GitHub App, sign-up and billing, legal documents, support channel.
+7. **G7:** 2–3 design partners for 2+ weeks.

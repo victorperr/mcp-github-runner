@@ -149,7 +149,7 @@ def restart_service(name: str) -> str:
 4. Under **Deployment branches and tags**, choose *Selected branches* → `main`, so only the registered branch can use it.
 5. Optional: put the credentials that only risky tools need (for example `DEPLOY_TOKEN`) in the **environment's** secrets instead of the repo's. GitHub only exposes environment secrets to jobs that passed approval, so even a bug in a non-gated tool can't read them.
 
-Required reviewers on **private** repos need a paid GitHub plan (Team or Enterprise for organizations). Check GitHub's current plan docs.
+Required reviewers on **private** repos need **GitHub Enterprise**. On other plans, GitHub refuses them with *"Please ensure the billing plan supports the required reviewers protection rule"*, and the gateway then refuses gated calls (`-32006`), so gated tools only work in public repos. Check GitHub's current plan docs.
 
 **Another environment name:** set `approval-environment:` on the action and change the `environment:` line in `mcp.yml` to match. Both must use the same name.
 
